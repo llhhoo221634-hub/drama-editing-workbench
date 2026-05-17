@@ -24,6 +24,7 @@ description: 剧集视频剪辑工作台。切割/合并/混剪/包装/格式转
 | 批量/流水线/一键出片/全自动 | → §11.3 批量流水线 + §12.3 一键出片 |
 | 调色/滤镜/LUT/暖调/冷调 | → §12.1 调色预设 |
 | 卡拉OK字幕/逐词高亮/ASS字幕 | → §12.2 高级字幕 |
+| 去掉字幕/去除水印/去原片字幕 | → §13 去除字幕水印 |
 
 ---
 
@@ -1252,3 +1253,106 @@ Sources:
 - [ASS karaoke word-by-word](https://stackoverflow.com/questions/76848089)
 - [tiktok-karaoke-captions](https://github.com/chjm-ai/tiktok-karaoke-captions)
 - [viral-shorts-engine](https://github.com/abc-kkk/viral-shorts-engine)
+
+---
+
+## §13 去除视频字幕/水印
+
+```
+用户: 去掉字幕
+用户: 去除水印
+用户: 把原片的字幕弄掉
+```
+
+### 13.1 ffmpeg delogo（快速，适合固定位置字幕）
+
+短剧字幕通常在底部 10-15% 区域，先调试定位再批量处理：
+
+```bash
+# 第1步：调试定位（绿色框预览）
+ffplay -i "第73集.mp4" -vf "delogo=x=0:y=ih-ih*0.15:w=iw:h=ih*0.15:show=1"
+
+# 第2步：确认区域后正式去除
+"$FFMPEG/ffmpeg.exe" -i input.mp4 \
+  -vf "delogo=x=0:y=ih-ih*0.15:w=iw:h=ih*0.15:band=8" \
+  -c:a copy output.mp4
+```
+
+| 参数 | 说明 | 短剧典型值 |
+|------|------|-----------|
+| `x` | 区域左上角 X | `0`（全宽） |
+| `y` | 区域左上角 Y | `ih*0.85`（底部15%） |
+| `w` | 区域宽度 | `iw`（全宽） |
+| `h` | 区域高度 | `ih*0.15` |
+| `band` | 边缘模糊 | `6-10`（越高越平滑但越模糊） |
+| `show=1` | 绿色框预览 | 调试用，确认后关闭 |
+
+### 13.2 boxblur 模糊覆盖（背景复杂时比 delogo 自然）
+
+```bash
+"$FFMPEG/ffmpeg.exe" -i input.mp4 -filter_complex \
+  "[0:v]split[base][sub]; \
+   [sub]crop=iw:ih*0.12:0:ih-ih*0.12,boxblur=20[blurred]; \
+   [base][blurred]overlay=0:ih-ih*0.12" \
+  -c:a copy output.mp4
+```
+
+### 13.3 crop 裁剪（最简单，但丢失画面）
+
+```bash
+# 直接切掉底部 12%，然后缩放回原尺寸
+"$FFMPEG/ffmpeg.exe" -i input.mp4 \
+  -vf "crop=iw:ih*0.88:0:0,scale=1080:1920" \
+  -c:a copy output.mp4
+```
+> ⚠️ 画面被拉伸，人物比例变形。仅适合不在意画幅的场景。
+
+### 13.4 VSR AI 无痕擦除（推荐，真正恢复背景）
+
+[Video-Subtitle-Remover](https://github.com/YaoFANGUK/video-subtitle-remover) — GitHub 8K+ Stars，开源免费。
+
+```bash
+# 安装
+git clone https://github.com/YaoFANGUK/video-subtitle-remover.git
+cd video-subtitle-remover
+pip install -r requirements.txt
+
+# 启动 WebUI（浏览器操作）
+python start.py
+# 打开 http://localhost:7860
+
+# 或命令行直接处理
+python backend/main.py --input video.mp4 --output cleaned.mp4 \
+  --algorithm sttn --subtitle_area 0:0.85:1:0.15
+```
+
+| 算法 | 适用 | GPU | 质量 |
+|------|------|-----|------|
+| **STTN** | 真人实拍 | 3080Ti+ | ⭐⭐⭐⭐ |
+| **LAMA** | 动漫/二次元 | 40系 | ⭐⭐⭐⭐ |
+| **ProPainter** | 抖动镜头 | 40系 | ⭐⭐⭐⭐⭐ |
+
+### 13.5 批量去字幕
+
+```bash
+# 批量处理目录下所有 mp4
+for f in *.mp4; do
+  "$FFMPEG/ffmpeg.exe" -y -i "$f" \
+    -vf "delogo=x=0:y=ih-ih*0.15:w=iw:h=ih*0.15:band=8" \
+    -c:a copy "cleaned_$f"
+done
+```
+
+### 13.6 方案选择
+
+| 场景 | 推荐 | 一句话 |
+|------|------|--------|
+| 快速预览/不在意痕迹 | `delogo` | 一条命令，秒级处理 |
+| 背景复杂、delogo 效果差 | `boxblur` | 模糊比插值残影自然 |
+| 不在乎画面比例 | `crop` | 最简单但变形 |
+| 追求质量、有 GPU | **VSR (AI)** | GitHub 8K⭐，真·无痕擦除 |
+
+Sources:
+- [Video-Subtitle-Remover (VSR)](https://github.com/YaoFANGUK/video-subtitle-remover)
+- [ffmpeg delogo filter](https://ffmpeg.org/ffmpeg-filters.html#delogo)
+- [DiT font-level subtitle erasure](https://www.infoq.cn/article/irz9lwexmxv7ohtnt3zl)
