@@ -21,7 +21,9 @@ description: 剧集视频剪辑工作台。切割/合并/混剪/包装/格式转
 | 爆款公式/钩子/节奏/转场特效/BGM/音效 | → §9 剪辑方法论 |
 | 审片/选段/爽点/虐点/怎么看剧/哪些片段好 | → §10 审片方法论 |
 | 封面/缩略图/降噪/声音处理/齿音/响度 | → §11 封面+音频精修 |
-| 批量/流水线/一键出片/全自动 | → §11.3 批量流水线 |
+| 批量/流水线/一键出片/全自动 | → §11.3 批量流水线 + §12.3 一键出片 |
+| 调色/滤镜/LUT/暖调/冷调 | → §12.1 调色预设 |
+| 卡拉OK字幕/逐词高亮/ASS字幕 | → §12.2 高级字幕 |
 
 ---
 
@@ -1042,3 +1044,211 @@ Sources:
 - [viral-shorts-engine](https://github.com/abc-kkk/viral-shorts-engine)
 - [7天拆完10部爆剧：短剧编剧靠拉片起飞](http://www.360doc.com/content/25/0910/12/5817836_1161065282.shtml)
 - [短剧投流金字塔模型](https://blog.csdn.net/MUMUFD/article/details/160928158)
+---
+
+## §12 一键出片 + 调色 + 高级字幕
+
+```
+用户: 一键出片
+用户: 全自动生成
+用户: 调色
+用户: 卡拉OK字幕
+```
+
+### 12.1 调色预设
+
+#### 内置滤镜调色（无需 LUT 文件）
+
+```bash
+# 甜宠暖调
+"$FFMPEG/ffmpeg.exe" -i input.mp4 -vf \
+  "eq=contrast=1.1:brightness=0.03:saturation=1.2,\
+   colorbalance=rs=0.08:gs=-0.03:bs=-0.10" warm_romance.mp4
+
+# 悬疑冷调
+"$FFMPEG/ffmpeg.exe" -i input.mp4 -vf \
+  "eq=contrast=1.15:brightness=-0.05:saturation=1.1,\
+   colorbalance=rs=-0.10:gs=0:bs=0.12" cold_suspense.mp4
+
+# 爽剧高饱和
+"$FFMPEG/ffmpeg.exe" -i input.mp4 -vf \
+  "eq=contrast=1.25:brightness=0.02:saturation=1.4:gamma=1.1,\
+   curves=preset=strong_contrast" high_action.mp4
+```
+
+#### LUT 文件调色
+
+```bash
+# 下载 .cube LUT：https://luts.iwltbap.com/
+"$FFMPEG/ffmpeg.exe" -i input.mp4 -vf "lut3d=look.cube" output.mp4
+
+# 50% 调色强度叠加
+"$FFMPEG/ffmpeg.exe" -i input.mp4 -filter_complex \
+  "[0:v]split[v1][v2];[v1]lut3d=look.cube[lut];\
+   [v2][lut]blend=all_mode=overlay:all_opacity=0.5" output.mp4
+```
+
+| 风格 | 滤镜链 | 适用剧种 |
+|------|--------|---------|
+| 暖调甜宠 | `eq=s=1.2 + colorbalance=rs=0.08:bs=-0.10` | 甜宠、古装言情 |
+| 冷调悬疑 | `eq=contrast=1.15:br=-0.05 + colorbalance=rs=-0.10:bs=0.12` | 悬疑、虐恋 |
+| 高饱和爽剧 | `eq=contrast=1.25:s=1.4 + curves=strong_contrast` | 逆袭、战神 |
+
+### 12.2 高级字幕：ASS 卡拉OK逐词动画
+
+#### 制作流程
+```
+1. Whisper 生成词语级时间戳字幕
+2. Aegisub Karaoke Templater 添加 \k 标签
+3. 导出 .ass → ffmpeg 烧录
+```
+
+#### 逐词高亮 ASS 模板
+
+```ass
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+
+[V4+ Styles]
+Style: Default,Microsoft YaHei,52,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,60,60,80,1
+Style: Active,Microsoft YaHei,56,&H0000deff,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,60,60,80,1
+
+[Events]
+# 每行重复全句，只高亮当前词（\rActive 切换样式）
+Dialogue: 0,0:00:00.00,0:00:06.00,Default,,0,0,0,,{\rActive}你{\rDefault}以为你赢了？
+Dialogue: 0,0:00:01.50,0:00:06.00,Default,,0,0,0,,你{\rActive}以为{\rDefault}你赢了？
+Dialogue: 0,0:00:02.30,0:00:06.00,Default,,0,0,0,,你以为你{\rActive}赢了{\rDefault}？
+```
+
+#### 烧录
+```bash
+"$FFMPEG/ffmpeg.exe" -i video.mp4 -vf "ass=subtitle.ass" -c:v libx264 -crf 21 output.mp4
+```
+
+#### 自动方案
+```bash
+pip install tiktok-karaoke-captions
+karaoke-captions video.mp4 --output styled_output.mp4
+```
+
+### 12.3 一键出片脚本
+
+一个 JSON 配置 → 一条命令 → 4 阶段全自动出片。
+
+#### 配置 `oneclick.json`
+```json
+{
+  "project": "终宋_宣发",
+  "media_dir": "E:/BaiduNetdiskDownload/05.终宋（76集）陈外＆王涵",
+  "style": "cold_suspense",
+  "bgm": "clips/ambient.wav",
+  "bgm_vol": 0.3,
+  "xfade_dur": 0.3,
+  "speed": 1.03,
+  "cover_text": "他一人一剑，守住最后一道城门",
+  "clips": [
+    {"source": "第73集.mp4", "start": 58, "dur": 6, "label": "对峙"},
+    {"source": "第67集.mp4", "start": 22, "dur": 9, "label": "桥头七人对峙"},
+    {"source": "第66集.mp4", "start": 5,  "dur": 12, "label": "行军打斗"},
+    {"source": "第73集.mp4", "start": 28, "dur": 9, "label": "武士激战"},
+    {"source": "第73集.mp4", "start": 80, "dur": 8, "label": "持剑独立"}
+  ]
+}
+```
+
+#### 一键出片脚本 `scripts/oneclick.sh`
+
+```bash
+#!/bin/bash
+set -e
+CONFIG="${1:-oneclick.json}"
+FF="<ffmpeg路径>/ffmpeg.exe"
+W=1080; H=1920; FPS=30
+
+eval $(node -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG','utf-8'));
+  console.log('PROJECT='+c.project); console.log('MEDIA_DIR='+c.media_dir);
+  console.log('STYLE='+(c.style||'warm')); console.log('BGM='+c.bgm);
+  console.log('XFADE='+(c.xfade_dur||0.3)); console.log('SPEED='+(c.speed||1.0));
+  console.log('COVER_TEXT='+c.cover_text);")
+
+DIR="$MEDIA_DIR/${PROJECT}_output"
+mkdir -p "$DIR"/{clips,edited,final}
+
+# 调色预设
+case "$STYLE" in
+  warm) COLOR="eq=contrast=1.1:saturation=1.2,colorbalance=rs=0.08:gs=-0.03:bs=-0.10" ;;
+  cold) COLOR="eq=contrast=1.15:brightness=-0.05:saturation=1.1,colorbalance=rs=-0.10:gs=0:bs=0.12" ;;
+  high) COLOR="eq=contrast=1.25:saturation=1.4:gamma=1.1,curves=preset=strong_contrast" ;;
+  *)    COLOR="eq=contrast=1.05" ;;
+esac
+
+AUDIO="highpass=f=70,equalizer=f=3000:t=q:w=1.5:g=3,\
+deesser=i=0.5:f=6500:s=0:m=0,\
+acompressor=threshold=-20dB:ratio=2.5:attack=5:release=50:makeup=3,\
+loudnorm=I=-16:TP=-1.5:LRA=11"
+
+echo "=== [1/4] 精确裁剪 ==="
+node -e "
+  const c=JSON.parse(require('fs').readFileSync('$CONFIG','utf-8'));
+  c.clips.forEach((cl,i) => {
+    const n=String(i+1).padStart(2,'0');
+    console.log('$FF -y -ss '+cl.start+' -t '+cl.dur+
+      ' -i $MEDIA_DIR/'+cl.source+
+      ' -vf scale=$W:$H,fps=$FPS -crf 18 -preset fast'+
+      ' -c:a aac -b:a 192k'+
+      ' $DIR/clips/'+n+'_'+cl.label+'.mp4');
+  });" | bash
+
+echo "=== [2/4] 特效+调色+音频 ==="
+for f in "$DIR"/clips/*.mp4; do
+  name=$(basename "$f" .mp4)
+  "$FF" -y -i "$f" \
+    -vf "setpts=$(echo "1/$SPEED" | bc -l)*PTS,fps=$FPS,$COLOR" \
+    -af "atempo=$SPEED,$AUDIO" \
+    "$DIR/edited/${name}_edit.mp4"
+done
+
+echo "=== [3/4] xfade 组装 + BGM ==="
+echo "file '$DIR/clips'/*.mp4" | sort > "$DIR/concat.txt"
+# 使用 xfade_gen.js 生成完整 xfade 命令（§2 已有）
+node "$SKILL_DIR/scripts/xfade_gen.js" $(for f in "$DIR"/edited/*_edit.mp4; do
+  ffprobe -v error -show_entries format=duration -of csv=p=0 "$f"; done)
+# 混合 BGM
+"$FF" -y -i "$DIR/assembled.mp4" -i "$BGM" -filter_complex \
+  "[1:a]atrim=0:60,volume=0.3,afade=t=out:st=57:d=3[bgm];[0:a][bgm]amix=inputs=2:duration=first[aout]" \
+  -map 0:v -map "[aout]" -c:v copy -c:a aac -b:a 192k "$DIR/final/${PROJECT}.mp4"
+
+echo "=== [4/4] 封面+多平台 ==="
+"$FF" -y -ss 2 -i "$DIR/final/${PROJECT}.mp4" -frames:v 1 -an \
+  -vf "thumbnail,scale=$W:$H,drawtext=fontsize=64:fontcolor=white:\
+       text='$COVER_TEXT':x=(w-text_w)/2:y=h-text_h-100:\
+       box=1:boxcolor=black@0.6" "$DIR/final/${PROJECT}_cover.jpg"
+
+"$FF" -y -i "$DIR/final/${PROJECT}.mp4" -t 60 -vf "scale=1080:1920" -crf 21 "$DIR/final/${PROJECT}_tiktok.mp4"
+"$FF" -y -i "$DIR/final/${PROJECT}.mp4" -t 180 -vf "crop=ih*9/16:ih,scale=1920:1080" -crf 20 "$DIR/final/${PROJECT}_bilibili.mp4"
+
+echo "✅ 一键出片完成: $DIR/final/"
+ls -lh "$DIR/final/"
+```
+
+### 12.4 技能总览
+
+```
+oneclick.json（一个配置文件）
+    ↓
+§12.3 一键脚本
+    ├── 阶段1: §8 独立裁剪（5 片段并行）
+    ├── 阶段2: §9.3 变速 + §12.1 调色 + §11.2 音频精修
+    ├── 阶段3: §2 xfade 组装 + §6 BGM 混音
+    └── 阶段4: §11.1 封面 + §11.3 多平台导出
+    ↓
+TikTok / B站 / 微信 三版本同时输出
+```
+
+Sources:
+- [FFmpeg lut3d color grading](https://mcpmarket.com/zh/tools/skills/ffmpeg-color-grading-chromakey)
+- [ASS karaoke word-by-word](https://stackoverflow.com/questions/76848089)
+- [tiktok-karaoke-captions](https://github.com/chjm-ai/tiktok-karaoke-captions)
+- [viral-shorts-engine](https://github.com/abc-kkk/viral-shorts-engine)
