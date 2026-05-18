@@ -1266,3 +1266,83 @@ Sources:
 > - AI LaMa 羽化遮罩（GaussianBlur 15px）+ IOPaint 可无痕擦除，但处理全片需约 30 分钟（3653 帧）
 > - 工具链：IOPaint + LaMa 模型 + 羽化遮罩 + Python 并行（2 worker）
 > - 留待以后封装成自动化工具
+
+---
+
+# 技能全景总览
+
+## 13章技能体系
+
+| § | 能力 | 一句话 |
+|---|------|--------|
+| 1 | 片段切割 | ffmpeg -ss -t 精确/无损裁切 |
+| 2 | 合并拼接 | concat / xfade 带转场组装 |
+| 3 | 创意混剪 | 画中画、分屏、变速、倒放、定格 |
+| 4 | 批量包装 | 片头片尾、字幕烧录、水印 |
+| 5 | 音画处理 | 提取/替换音频、横竖转换、压缩 |
+| 6 | 宣发制作 | 帧采样→vision.js识图→xfade组装→BGM→字幕 |
+| 7 | Premiere/AE导出 | XML/EDL生成器（不推荐）+ DNxHR/ProRes母版 |
+| 8 | 独立裁剪片段 | ffmpeg精确裁剪为独立mp4，100%兼容 |
+| 9 | 剪辑方法论 | 爆款公式、ffmpeg特效命令、去重六件套、音效设计 |
+| 10 | 审片方法论 | 五层框架、分子级拆解、爽点/虐点识别、付费卡点 |
+| 11 | 专业进阶 | 封面生成、6段式音频精修链、批量流水线 |
+| 12 | 一键出片 | 调色预设(3种)、ASS卡拉OK字幕、一键脚本 |
+| 13 | 去字幕 | delogo/boxblur/crop/VSR AI（附录待完善） |
+
+## 工具链
+
+| 工具 | 用途 |
+|------|------|
+| `ffmpeg` / `ffprobe` | 所有视频处理核心 |
+| `vision.js` | AI帧内容分析（Qwen-VL-Max） |
+| `edge-tts` | 中文TTS配音（云扬低沉男声） |
+| `whisper` | 语音识别自动字幕 |
+| `iopaint` | AI无痕去字幕（LaMa模型） |
+| `xfade_gen.js` | 多片段xfade组装命令生成 |
+| `fcp_xml_gen.js` | FCP 7 XML生成（含ffprobe源时长探测） |
+| `edl_gen.js` | CMX3600 EDL生成 |
+| `auto_script_gen.py` | **AI全自动剪辑系统** — Qwen生成脚本+ffmpeg执行+双模式+偏好记忆 |
+
+## 外部API
+
+| API | 用途 | 模型 |
+|-----|------|------|
+| 千问 DashScope | vision.js帧分析 | qwen-vl-max |
+| 千问 DashScope | auto_script_gen脚本生成 | qwen-plus（文本） |
+| Edge TTS | 中文配音 | zh-CN-YunyangNeural |
+
+## 项目文件
+
+| 文件 | 位置 |
+|------|------|
+| 技能定义 | `C:/Users/Administrator/.claude/skills/短剧宣发/SKILL.md` |
+| GitHub | `github.com/llhhoo221634-hub/drama-editing-workbench` |
+| 项目根 | `E:/BaiduNetdiskDownload/05.终宋（76集）陈外＆王涵/` |
+| 自动剪辑 | `auto_script_gen.py` |
+| 识图脚本 | `vision.js` |
+| 偏好记忆 | `.edit_prefs.json` |
+
+## 核心工作流
+
+```
+§10 审片（知道剪什么）
+    ↓
+vision.js 帧分析 + Whisper 语音转写（知道内容）
+    ↓
+auto_script_gen.py（Qwen自动生成剪辑脚本JSON）
+    ↓
+ffmpeg 执行（裁剪→特效→调色→音频精修→组装→BGM→封面）
+    ↓
+§8 独立裁剪片段 或 §12.3 多平台一键导出
+```
+
+## 已验证能力（76集终宋实测算力通过）
+
+- 670帧/76集并行审片（4进程）
+- 全自动剪辑脚本生成+执行（Qwen→ffmpeg）
+- 炫技/叙事双模式参数预设
+- 偏好记忆（上次风格自动询问）
+- 6段式音频精修（highpass→EQ→deesser→compressor→loudnorm）
+- 3套调色预设（暖调甜宠/冷调悬疑/高饱和爽剧）
+- 8片段并行提取+组装
+- AI去字幕（LaMa羽化遮罩+2进程并行）
