@@ -1352,6 +1352,13 @@ done
 | 不在乎画面比例 | `crop` | 最简单但变形 |
 | 追求质量、有 GPU | **VSR (AI)** | GitHub 8K⭐，真·无痕擦除 |
 
+> ⚠️ **关键教训（终宋实测）**：
+> - 字幕不一定在底部！《终宋》字幕在画面 **68%-73%** 处（中下部）
+> - **先提取一帧用 vision.js 定位字幕精确位置**，再设定参数
+> - 错误：假设底部 15%，用大区域模糊 → 遮挡原剧情
+> - 正确：定位后用窄带（仅占画面 9%）精确遮盖
+> - delogo 在 Gyan Windows build 有 bug，fallback 到 boxblur
+
 Sources:
 - [Video-Subtitle-Remover (VSR)](https://github.com/YaoFANGUK/video-subtitle-remover)
 - [ffmpeg delogo filter](https://ffmpeg.org/ffmpeg-filters.html#delogo)
