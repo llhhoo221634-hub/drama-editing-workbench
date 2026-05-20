@@ -1,0 +1,13 @@
+{
+  "ffmpeg": "C:\\Users\\Administrator\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1.1-full_build\\bin\\ffmpeg.exe",
+  "ffprobe": "C:\\Users\\Administrator\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1.1-full_build\\bin\\ffprobe.exe",
+  "dashscope_api_key": "sk-63bcf94c95f8416b974b3902e6581888",
+  "dashscope_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "vision_model": "qwen3-vl-plus",
+  "text_model": "qwen-plus",
+  "default_bgm": "E:\\BaiduNetdiskDownload\\05.终宋（76集）陈外＆王涵\\clips\\ambient.wav",
+  "test_dramas": {
+    "终宋": "E:\\BaiduNetdiskDownload\\05.终宋（76集）陈外＆王涵\\clips_promo\\scan_76\\analysis.txt",
+    "三尸语": "E:\\BaiduNetdiskDownload\\三尸语_剪辑工作台\\全剧分析.txt"
+  }
+}

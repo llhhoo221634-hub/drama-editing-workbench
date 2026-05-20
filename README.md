@@ -16,6 +16,11 @@
 
 | 脚本 | 功能 |
 |------|------|
+| `multi_frame_sample.py` | 场景检测 + 多帧采样 + 千问VL结构化识图，输出 V2 质量字段 |
+| `build_analysis_v3.py` | 离线把 `analysis_v2.txt` 升级为剪辑决策型 `analysis_v3.txt` |
+| `run_promo_molecular.py` | 6类分子宣发生成：冲突钩子/身份反转/情感共鸣/金句卡点/光影美学/悬念钩子 |
+| `edit_utils.py` | V2/V3解析、片段切割、音频/事实QA、并行工具 |
+| `genre_engine.py` | 类型识别、方向推荐、叙事功能标签、分集多样性 |
 | `scripts/xfade_gen.js` | 自动生成多片段 xfade 转场组接的 ffmpeg 命令 |
 | `scripts/edl_gen.js` | CMX3600 EDL 编辑决策表生成（Premiere 兼容） |
 | `scripts/fcp_xml_gen.js` | FCP 7 XML 生成（含 ffprobe 源时长探测、Cross Dissolve 转场、URL 编码） |
@@ -28,11 +33,36 @@
 
 ## 快速开始
 
+```bash
+# 1. 配置 ffmpeg / ffprobe / DashScope Key
+cp config.example.json config.json
+
+# 2. 多帧采样，生成 analysis_v2.txt
+python multi_frame_sample.py --eps 1,7,29 --workers 1
+python multi_frame_sample.py --resume --workers 2
+
+# 3. 离线升级剪辑决策数据，生成 analysis_v3.txt 和 rejects 清单
+python build_analysis_v3.py
+
+# 4. 先看选片，不切割
+python run_promo_molecular.py --dry-run --types hook_clash,suspense_hook
+
+# 5. 生成6类分子宣发，并输出 qa_<type>.json
+python run_promo_molecular.py --types hook_clash,identity_twist,emotional_resonance,quote_rhythm,cinematic_beauty,suspense_hook
+```
+
+常用口令：
+
 ```
 说"做宣发视频" → 自动触发全流程：审片→裁剪→特效→字幕→导出
 说"切出第15集1分20秒到2分10秒" → §1 片段切割
 说"给这段降噪" → §11 音频精修
 说"导出给Premiere" → §8 独立裁剪片段
 ```
+
+## V2/V3 数据字段
+
+- V2：`usable/reject_reason/visual_quality/face_quality/action_level/event_subtype/timestamp`，用于过滤白屏、黑屏、片头、纯文字、模糊帧。
+- V3：`promo_value/hook_value/emotion_value/action_value/visual_value/conflict_side/cut_role/best_cut/pre_roll/post_roll/suggested_duration`，用于决定镜头能不能用、适合放哪里、截多长。
 
 完整文档见 `SKILL.md`（11 章，850+ 行）。
