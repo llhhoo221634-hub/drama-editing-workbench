@@ -292,7 +292,11 @@ def main():
     parser.add_argument('--xfade', type=str, default='fade',
                         choices=['fade', 'pixelize', 'smoothleft', 'none'],
                         help='片段间转场效果 (默认 fade)')
+    parser.add_argument('--quick', action='store_true', help='快速模式: 跳过 xfade + legacy 数据')
     args = parser.parse_args()
+
+    if args.quick:
+        args.xfade = 'none'
 
     # ── CSV 人工审核模式 ──
     review_selections = None

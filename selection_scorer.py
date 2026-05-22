@@ -59,14 +59,14 @@ def load_analysis():
     # V2数据优先加入
     clips.extend(v2_clips)
 
-    # V1数据仅保留V2未覆盖的集（去重：同ep且时间差<10s）
+    # V1数据仅保留V2未覆盖的集（去重：同ep且时间差<5s）
     v1_added = 0
     for c in v1_clips:
         ep = int(c.get('ep', '0') or 0)
         ts = c.get('time', 0)
         is_dup = False
         for v2_ep, v2_ts in v2_keys:
-            if v2_ep == ep and abs(v2_ts - ts) < 10:
+            if v2_ep == ep and abs(v2_ts - ts) < 5:
                 is_dup = True
                 break
         if not is_dup:
