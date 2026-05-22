@@ -212,6 +212,18 @@ def enrich(data, parsed):
     promo_value = clamp(trend_promo)
     hook_value = clamp(trend_hook)
 
+    # ── aesthetic_score: 独立加权公式 ──
+    composition_type = parsed.get("composition_type", "无") or "无"
+    color_palette = parsed.get("color_palette", "自然") or "自然"
+    light_beauty = parsed.get("light_beauty", "普通") or "普通"
+
+    composition_score = {"对称": 3, "引导线": 3, "三分法": 2, "中心对称": 1}.get(composition_type, 0)
+    light_score = {"电影级": 5, "良好": 3, "普通": 1, "差": 0}.get(light_beauty, 1)
+    color_score = {"暖": 2, "冷": 2, "高饱和": 2, "低饱和": 1, "自然": 1}.get(color_palette, 1)
+
+    aesthetic_score = composition_score + light_score + color_score
+    cinematic_beauty = clamp(aesthetic_score, 1, 5)
+
     # 保留旧字段的计算（兼容下游）
     emotion_value = clamp(emotion)
     action_value = clamp(action_level)
@@ -268,6 +280,11 @@ def enrich(data, parsed):
         "dialogue_value": dialogue_value,
         "rhythm_value": rhythm_value,
         "audio_hook_value": audio_hook_value,
+        "cinematic_beauty": cinematic_beauty,
+        "aesthetic_score": aesthetic_score,
+        "composition_type": composition_type,
+        "color_palette": color_palette,
+        "light_beauty": light_beauty,
         "cut_anchor": cut_anchor,
         "conflict_side": infer_conflict_side(blob),
         "cut_role": cut_role,
@@ -380,7 +397,7 @@ def main():
     with open(ANALYSIS_V3, "w", encoding="utf-8") as out, \
          open(REJECTS_OUT, "w", encoding="utf-8") as rej:
         for frame_id, data in enriched:
-            timestamp = int(float(data.get("timestamp", 0)))
+            timestamp = float(data.get("timestamp", 0))
             payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
             out.write(f"{frame_id} {timestamp}s {payload}\n")
             total += 1

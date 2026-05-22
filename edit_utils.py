@@ -43,6 +43,23 @@ def load_engine_config():
     return dict(_tcfg)
 
 
+def get_dashscope_api_key():
+    """读取 DashScope API Key：优先环境变量 DASHSCOPE_API_KEY，fallback 到 config.json。
+    fallback 时打印迁移提示。"""
+    env_key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
+    if env_key:
+        return env_key
+    # fallback: config.json 中的 key（提示迁移）
+    config_key = _tcfg.get("dashscope_api_key", "") or (_tcfg.get("vision", {}) or {}).get("api_key", "")
+    if config_key:
+        log.warning(
+            "⚠  DASHSCOPE_API_KEY 未设置，回退到 config.json 中的明文 key。"
+            "请尽快迁移: set DASHSCOPE_API_KEY=your_key，并清空 config.json 中的 api_key 明文。"
+        )
+        return config_key
+    return ""
+
+
 def load_project_config(config=None):
     """从 config.json 读取通用项目配置，兼容旧字段。"""
     cfg = dict(config or _tcfg)
@@ -285,6 +302,16 @@ def parse_vision_line(line):
             # V2扩展字段
             result["scene"] = v2.get("scene", "")
             result["light"] = v2.get("light", "")
+            # aesthetic 美学子字段顶层提取
+            aesthetic = v2.get("aesthetic", {})
+            if isinstance(aesthetic, dict):
+                result["composition_type"] = aesthetic.get("composition_type", "无")
+                result["color_palette"] = aesthetic.get("color_palette", "自然")
+                result["light_beauty"] = aesthetic.get("light_beauty", "普通")
+            else:
+                result["composition_type"] = "无"
+                result["color_palette"] = "自然"
+                result["light_beauty"] = "普通"
             result["event_conf"] = v2.get("event_conf", "推测")
             result["continuity"] = v2.get("continuity", "")
             result["time_pct"] = v2.get("time_pct", v2.get("timestamp", 0))
@@ -309,6 +336,11 @@ def parse_vision_line(line):
             # V3 剪辑决策字段 (build_analysis_v3.py enrich 平铺到顶层)
             result["promo_value"] = int(v2.get("promo_value", 1) or 1)
             result["hook_value"] = int(v2.get("hook_value", 1) or 1)
+            # aesthetic_score (V3 综合审美评分)
+            result["aesthetic_score"] = int(v2.get("aesthetic_score", 0) or 0)
+            result["composition_type"] = v2.get("composition_type", "无") or "无"
+            result["color_palette"] = v2.get("color_palette", "自然") or "自然"
+            result["light_beauty"] = v2.get("light_beauty", "普通") or "普通"
             result["cut_role"] = v2.get("cut_role", "unknown")
             result["best_cut"] = v2.get("best_cut", "before_action")
             result["pre_roll"] = float(v2.get("pre_roll", 1.0) or 1.0)
@@ -319,8 +351,8 @@ def parse_vision_line(line):
             result["_v2"] = v2  # 保留完整V2/V3数据
             result["scene_types"] = list(set(result["scene_types"]))
             return result
-        except (ValueError, TypeError, KeyError):
-            pass  # 回退到旧解析
+        except (ValueError, TypeError, KeyError) as _e:
+            import sys; print(f"[WARN] parse_vision_line fallback: {_e} for line starting: {str(line)[:80]}", file=sys.stderr)
 
     # ── 旧格式解析 ──
     content_part = line
