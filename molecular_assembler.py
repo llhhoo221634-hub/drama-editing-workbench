@@ -3,9 +3,10 @@ molecular_assembler.py — 片段切割、转场组装、时间轴导出与QA审
 """
 import os, subprocess, json
 
-from edit_utils import (parallel_cut_clips, write_json, episode_filename,
-                        load_engine_config, load_project_config)
+from config import get_engine_config, get_project_config
+from edit_utils import (parallel_cut_clips, write_json, episode_filename)
 from molecule_types import MOLECULE_TYPES, TRANSITION_PROFILE_MAP, molecular_score, is_high_conflict_clip, clip_event_text
+
 def _check_run(proc, label="ffmpeg", output_path=None):
     """检查 subprocess 运行结果，失败时抛异常。"""
     if proc.returncode != 0:
@@ -15,11 +16,9 @@ def _check_run(proc, label="ffmpeg", output_path=None):
     if output_path and (not os.path.exists(output_path) or os.path.getsize(output_path) < 1024):
         raise RuntimeError(f"{label} output invalid/missing: {output_path}")
 
-
-
 # ── Config ──
-_cfg = load_engine_config()
-_project = load_project_config(_cfg)
+_cfg = get_engine_config()
+_project = get_project_config()
 _render_cfg = (_cfg.get("render") or {}) if isinstance(_cfg.get("render"), dict) else {}
 SOURCE_DIR = _project["media_dir"]
 OUTPUT_DIR = _project["molecular_dir"]

@@ -3,12 +3,13 @@ selection_scorer.py — 片段评分、叙事加权、数据加载与分析
 """
 import os, json, re
 
-from edit_utils import parse_vision_line, load_engine_config, load_project_config
+from edit_utils import parse_vision_line
+from config import get_engine_config, get_project_config
 from molecule_types import MOLECULE_TYPES, FUSION_WEIGHTS, clip_event_text, is_high_conflict_clip, molecular_score
 
 # ── Config (self-contained to avoid circular imports) ──
-_cfg = load_engine_config()
-_project = load_project_config(_cfg)
+_cfg = get_engine_config()
+_project = get_project_config()
 ANALYSIS_FILE = _project["analysis_v3"]
 ANALYSIS_FALLBACK = _project["analysis_fallback"]
 OUTPUT_DIR = _project["molecular_dir"]

@@ -8,13 +8,13 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).parent
 sys.path.insert(0, str(SKILL_DIR))
 
+from config import get_engine_config, get_project_config
+
 from edit_utils import (
     parse_vision_line,
     parallel_cut_clips,
     check_audio_quality,
     fact_check_selection,
-    load_engine_config,
-    load_project_config,
     episode_filename,
     write_json,
 )
@@ -36,8 +36,8 @@ from molecular_assembler import (cut_molecular_clips, assemble_molecular, build_
                                   write_timeline_file, molecular_qa_checks, write_qa_report)
 
 # ── Config ──
-_cfg = load_engine_config()
-_project = load_project_config(_cfg)
+_cfg = get_engine_config()
+_project = get_project_config()
 _render_cfg = (_cfg.get("render") or {}) if isinstance(_cfg.get("render"), dict) else {}
 SOURCE_DIR = _project["media_dir"]
 ANALYSIS_FILE = _project["analysis_v3"]

@@ -69,6 +69,8 @@ if API_KEY:
     _api_session.headers.update({"Authorization": f"Bearer {API_KEY}"})
 
 _circuit_breaker = {"consecutive_failures": 0, "paused_until": 0.0}
+import threading
+_cb_lock = threading.Lock()
 
 def _resolve_episode_source(ep_num):
     """按统一命名模板定位集数文件，兼容少量旧命名。"""
@@ -563,7 +565,8 @@ def _api_call_with_retry(payload):
             resp = _api_session.post(url, json=payload, timeout=_VISION_TIMEOUT)
 
             if resp.status_code == 200:
-                _circuit_breaker["consecutive_failures"] = 0
+                with _cb_lock:
+                    _circuit_breaker["consecutive_failures"] = 0
                 return resp.json()
 
             # 429 Rate limit — 退避重试
@@ -579,34 +582,37 @@ def _api_call_with_retry(payload):
                 continue
 
             # 4xx 其他错误（如 400/401/403）— 不重试
-            _circuit_breaker["consecutive_failures"] += 1
+            with _cb_lock:
+                _circuit_breaker["consecutive_failures"] += 1
             return {"error": f"API_ERROR_{resp.status_code}", "status": resp.status_code}
 
         except requests.exceptions.Timeout:
             if attempt < _VISION_MAX_RETRIES - 1:
                 time.sleep(2 ** attempt)
                 continue
-            _circuit_breaker["consecutive_failures"] += 1
+            with _cb_lock:
+                _circuit_breaker["consecutive_failures"] += 1
             return {"error": "API_TIMEOUT"}
 
         except requests.exceptions.ConnectionError:
             if attempt < _VISION_MAX_RETRIES - 1:
                 time.sleep(2 ** attempt + 1)
                 continue
-            _circuit_breaker["consecutive_failures"] += 1
+            with _cb_lock:
+                _circuit_breaker["consecutive_failures"] += 1
             return {"error": "API_CONNECTION_ERROR"}
 
         except Exception as e:
-            _circuit_breaker["consecutive_failures"] += 1
+            with _cb_lock:
+                _circuit_breaker["consecutive_failures"] += 1
             return {"error": f"API_ERROR: {str(e)}"}
 
     # 所有重试用尽
-    _circuit_breaker["consecutive_failures"] += 1
-
-    # 简化熔断：连续 5 次失败 → 暂停 30s
-    if _circuit_breaker["consecutive_failures"] >= 5:
-        _circuit_breaker["paused_until"] = time.time() + 30.0
-        print(f"    [熔断] 连续{_circuit_breaker['consecutive_failures']}次失败，暂停30s")
+    with _cb_lock:
+        _circuit_breaker["consecutive_failures"] += 1
+        if _circuit_breaker["consecutive_failures"] >= 5:
+            _circuit_breaker["paused_until"] = time.time() + 30.0
+            print(f"    [熔断] 连续{_circuit_breaker['consecutive_failures']}次失败，暂停30s")
 
     return {"error": "API_MAX_RETRIES_EXCEEDED"}
 
