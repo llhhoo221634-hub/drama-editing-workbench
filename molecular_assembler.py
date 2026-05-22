@@ -29,8 +29,7 @@ FFMPEG = _cfg.get("ffmpeg", "") or "ffmpeg"
 FFPROBE = _cfg.get("ffprobe", "") or "ffprobe"
 
 if not FFMPEG or not os.path.exists(FFMPEG):
-    from edit_utils import load_engine_config
-    _full_cfg = load_engine_config()
+    _full_cfg = get_engine_config()
     _ff = _full_cfg.get("ffmpeg", "ffmpeg") or "ffmpeg"
     if os.path.exists(_ff):
         FFMPEG = _ff
