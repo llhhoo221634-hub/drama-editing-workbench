@@ -43,9 +43,11 @@ BGM=<背景音乐路径>
 ```
 
 **首次接触新项目时**：
-1. `ffprobe` 探测分辨率和帧率
-2. `ls` 统计集数
-3. 读取项目 CLAUDE.md 获取高冲突集数、BGM 等信息
+1. 在 `config.json` 的 `project` 段填写 `project_name`、`media_dir`、`work_dir`、`analysis_v2/analysis_v3`、`frames_dir`、`molecular_dir`、`bgm`
+2. 在 `config.json` 的 `vision` 段配置 API（model、api_key、max_short_edge、concurrency、max_retries、timeout）
+3. `ffprobe` 探测分辨率和帧率
+4. 扫描剧集文件并确认 `episode_name_template`（如 `{ep}.mp4` / `{ep02}.mp4` / `第{ep}集.mp4`）
+5. 读取项目 CLAUDE.md 获取高冲突集数、BGM 等先验信息（如有）
 
 ---
 
@@ -54,27 +56,54 @@ BGM=<背景音乐路径>
 ### A.1 管线总览
 
 ```
-multi_frame_sample.py（V2采样+质量标记）
+multi_frame_sample.py（V2趋势采样: 三帧多图 → action_direction/emotion_trend）
     ↓
-build_analysis_v3.py（离线升级为剪辑决策数据）
+build_analysis_v3.py（两阶段: 趋势组合→原始分 → 全剧分位数熔断 1-5）
     ↓
-run_promo_molecular.py（6类分子宣发自动生成）
+run_promo_molecular.py（6类分子宣发 + 统一切割公式 + afade音频平滑）
     ↓
-genre_engine.py + auto_script_gen.py（类型识别+全自动管线）
+genre_engine.py（类型识别+方向推荐，可选）
 ```
 
 ### A.2 多帧采样（V2数据生成）
 
 ```bash
-# 场景检测 + 多帧采样 + 千问VL结构化识图
+# 三帧多图趋势采样（每关键帧截取 ts±1.5s 邻帧，Image List 发送）
 python multi_frame_sample.py --eps 1,7,29 --workers 1
 
-# 断点续跑（跳过已完成集数）
-python multi_frame_sample.py --resume --workers 2
+# 断点续跑
+python multi_frame_sample.py --resume --workers 1
+# 内存受限时 workers=1，帧并发 config.vision.concurrency=2
 ```
 
 **输出**：`analysis_v2.txt`
-**V2字段**：usable, reject_reason, visual_quality, face_quality, action_level, event_subtype, timestamp, dialogue_visible, subtitle_text
+**V2字段**：
+
+| 分类 | 字段 |
+|------|------|
+| VL描述 | shot, event, event_subtype, event_conf, face_quality, dialogue_visible, subtitle_text, scene, light, chars, hint, props, mood, usable, reject_reason |
+| 趋势标签(VL输出) | **action_direction**(增强/持续/静止/减弱), **emotion_trend**(上升/稳定/下降/爆发) |
+| 规则推导(V3计算) | emo, action_level, visual_quality（从趋势组合+event_subtype推导，不依赖VL打分） |
+| 音频增强 | audio_energy, speech_density, has_speech_peak, beat_nearby, transcript_excerpt, dialogue_anchor |
+
+**架构决策**：VL 不输出绝对数字评分（emo/action_level/vq），只输出定性趋势标签。数字评分由 V3 规则层从趋势组合推导，避免 VL 评分膨胀（旧版93%帧挤在emo=3）。
+
+**Vision API 工程化**：
+- 三帧多图：截取 ts-1.5s, ts, ts+1.5s 三帧 → Image List 平铺发送（DashScope兼容接口原生支持）
+- 图片压缩：PIL resize 到 `vision.max_short_edge`（默认640px），JPEG 85% 质量
+- 连接池：`requests.Session()` 复用 TCP 连接
+- 重试退避：3次指数退避，自动处理 429/5xx/超时
+- 帧级并发：`ThreadPoolExecutor(max_workers=vision.concurrency)`，建议≤2控制内存
+
+**event 互斥约束**：Prompt 强制要求——无肢体对抗/武器的站立对话必须标 event=日常/对话，禁止标"冲突"。
+- 重试退避：3次指数退避重试，自动处理 429/5xx/超时
+- 简化熔断：连续5次失败暂停30s
+- 帧级并发：`ThreadPoolExecutor(max_workers=vision.concurrency)`，默认3并发
+
+**通用化说明**：
+- V2 表达的是片段的”感知层字段”，不是某部剧专属剧情信息
+- 默认路径来自 `config.json -> project`，切换剧目时不应再修改脚本源码
+- 音频字段（audio_energy 等）由 Whisper VTT 转写 + `summarize_audio_window()` 生成
 
 **过滤能力**：自动标记白屏、黑屏、片头、纯文字、模糊帧为 usable=false
 
@@ -84,54 +113,53 @@ python multi_frame_sample.py --resume --workers 2
 python build_analysis_v3.py
 ```
 
-**输入**：analysis_v2.txt
-**输出**：
-- `analysis_v3.txt` — 增加剪辑决策字段
-- `analysis_v3_rejects.txt` — 不可用帧清单
+**输入**：`analysis_v2.txt`（趋势标签版）
+**输出**：`analysis_v3.txt` + `analysis_v3_rejects.txt`
 
-**V3新增字段**：
+**两阶段处理**：
 
-| 字段 | 含义 | 取值 |
-|------|------|------|
-| promo_value | 宣发价值 | 1-5 |
-| hook_value | 钩子强度 | 1-5 |
-| emotion_value | 情绪价值 | 1-5 |
-| action_value | 动作价值 | 1-5 |
-| visual_value | 视觉价值 | 1-5 |
-| conflict_side | 冲突类型 | 群体冲突/双人对峙/单人爆发/情绪崩溃/无 |
-| cut_role | 叙事位置 | hook/climax/rise/setup/ending |
-| best_cut | 最佳切点 | on_action/before_action/after_reaction |
-| pre_roll | 前摇秒数 | 0.5-1.5 |
-| post_roll | 后摇秒数 | 1.5-3.5 |
-| suggested_duration | 建议时长 | 2.0-5.0 |
+| 阶段 | 逻辑 |
+|------|------|
+| Pass 1 | 趋势组合 → 原始分数：(爆发,增强)=5, (上升,增强)=4, (稳定,增强)=3... + event_subtype高能词库(抓扯/持械/怒吼)+1 + 正脸/字幕加分 |
+| Pass 2 | **全剧分位数熔断**：top-5%→hook=5, top-5-15%→4, top-15-35%→3, top-35-60%→2, bottom-40%→1。熔断后重算 cut_role |
 
-**核心价值**：回答"这个镜头能不能用、适合放哪里、截多长"。
+**V3字段**：promo_value, hook_value, emotion_value, action_value, visual_value, dialogue_value, rhythm_value, audio_hook_value, cut_anchor, conflict_side, cut_role, best_cut, pre_roll, post_roll, suggested_duration
+
+**核心价值**：趋势标签→规则打分→全剧排名→分位映射，确保不同剧集自动适配（甜宠剧vs悬疑剧的冲突密度不同，分位数自适应）。
 
 ### A.4 分子宣发生成（6类）
 
 ```bash
-# 先预览选片（不切割）
+# 预览选片（不切割）
 python run_promo_molecular.py --dry-run --types hook_clash,suspense_hook
 
-# 正式生成
+# 导出 CSV 审片表
+python run_promo_molecular.py --dry-run --export-csv --types hook_clash
+
+# 从人工审核 CSV 生成
+python run_promo_molecular.py --from-csv review_hook_clash.csv
+
+# 正式生成全部6类
 python run_promo_molecular.py --types hook_clash,identity_twist,emotional_resonance,quote_rhythm,cinematic_beauty,suspense_hook
 ```
 
 **6类分子**：
 
-| 类型 | 说明 | 选片策略 |
-|------|------|---------|
-| hook_clash | 冲突钩子 | hook_value≥4, 高动作+高冲突 |
-| identity_twist | 身份反转 | 有对话+身份相关事件 |
-| emotional_resonance | 情感共鸣 | emotion_value≥4, 悲伤/哭泣 |
-| quote_rhythm | 金句卡点 | 有字幕+高情绪 |
-| cinematic_beauty | 光影美学 | visual_value≥4, 全景/特写 |
-| suspense_hook | 悬念钩子 | hook_value≥3, 截断式结尾 |
+| 类型 | 说明 | 节奏 |
+|------|------|------|
+| hook_clash | 冲突钩子 | clip 1.5-3.0s, emo≥4 |
+| identity_twist | 身份反转 | clip 1.5-3.5s |
+| emotional_resonance | 情感共鸣 | clip 2.0-4.0s |
+| quote_rhythm | 金句卡点 | clip 0.8-2.0s（对齐抖音0.8s切） |
+| cinematic_beauty | 光影美学 | clip 2.0-3.5s |
+| suspense_hook | 悬念钩子 | clip 1.5-2.5s |
 
 **质量保障**：
-- 自动过滤 usable=false、visual_quality<3、推测污染
-- 生成 `qa_<type>.json` 质检报告
-- (ep, time±5s) 去重，避免相邻帧重复
+- 分位数熔断后 hook=5 仅 top-5% 帧，分子筛选自动获得卡位边界
+- 通用去重：同集±5s时间窗口内只保留最优
+- afade 0.2s 音频淡入淡出，消除拼接爆音
+- CSV 审片机制：dry-run导出 → 人工标记keep列 → --from-csv生成
+- Timeline JSON 导出 + QA 报告
 
 ### A.5 全自动管线（genre_engine + auto_script_gen）
 

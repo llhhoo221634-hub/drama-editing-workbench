@@ -1,13 +1,37 @@
 {
-  "ffmpeg": "C:\\Users\\Administrator\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1.1-full_build\\bin\\ffmpeg.exe",
-  "ffprobe": "C:\\Users\\Administrator\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1.1-full_build\\bin\\ffprobe.exe",
-  "dashscope_api_key": "sk-63bcf94c95f8416b974b3902e6581888",
+  "ffmpeg": "C:\\path\\to\\ffmpeg.exe",
+  "ffprobe": "C:\\path\\to\\ffprobe.exe",
+  "dashscope_api_key": "YOUR_DASHSCOPE_API_KEY",
   "dashscope_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
   "vision_model": "qwen3-vl-plus",
   "text_model": "qwen-plus",
-  "default_bgm": "E:\\BaiduNetdiskDownload\\05.终宋（76集）陈外＆王涵\\clips\\ambient.wav",
-  "test_dramas": {
-    "终宋": "E:\\BaiduNetdiskDownload\\05.终宋（76集）陈外＆王涵\\clips_promo\\scan_76\\analysis.txt",
-    "三尸语": "E:\\BaiduNetdiskDownload\\三尸语_剪辑工作台\\全剧分析.txt"
+  "vision": {
+    "model": "qwen3-vl-plus",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "YOUR_DASHSCOPE_API_KEY",
+    "max_short_edge": 640,
+    "concurrency": 3,
+    "max_retries": 3,
+    "timeout": 45
+  },
+  "audio_analysis": {
+    "enabled": true,
+    "whisper_model": "medium",
+    "window_seconds": 2.5,
+    "speech_peak_chars": 14,
+    "energy_peak_threshold": 0.72
+  },
+  "project": {
+    "project_name": "示例短剧",
+    "media_dir": "E:\\your-drama\\episodes",
+    "work_dir": "E:\\your-drama\\work",
+    "analysis_v2": "E:\\your-drama\\work\\analysis_v2.txt",
+    "analysis_v3": "E:\\your-drama\\work\\analysis_v3.txt",
+    "analysis_fallback": "E:\\your-drama\\work\\analysis.txt",
+    "frames_dir": "E:\\your-drama\\work\\_frames_v2",
+    "molecular_dir": "E:\\your-drama\\work\\_work_molecular",
+    "bgm": "E:\\your-drama\\assets\\ambient.wav",
+    "episode_name_template": "{ep}.mp4",
+    "episode_count": 76
   }
 }

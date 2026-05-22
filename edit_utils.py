@@ -2,7 +2,7 @@
 剪辑工具集 v1.0 — 缓存 / 评分 / QA / 并行 / 日志
 可被 auto_script_gen.py 导入，也可独立使用。
 """
-import json, os, sys, subprocess, time, hashlib, shutil, logging, re
+import json, os, sys, subprocess, time, hashlib, shutil, logging, re, math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime
@@ -37,6 +37,100 @@ def _load_tool_config():
 _tcfg = _load_tool_config()
 FFMPEG  = _tcfg.get("ffmpeg", os.environ.get("FFMPEG", "ffmpeg"))
 FFPROBE = _tcfg.get("ffprobe", os.environ.get("FFPROBE", "ffprobe"))
+
+def load_engine_config():
+    """返回原始引擎配置。"""
+    return dict(_tcfg)
+
+
+def load_project_config(config=None):
+    """从 config.json 读取通用项目配置，兼容旧字段。"""
+    cfg = dict(config or _tcfg)
+    project = dict(cfg.get("project") or {})
+
+    media_dir = project.get("media_dir") or cfg.get("media_dir") or ""
+    work_dir = project.get("work_dir") or cfg.get("work_dir") or str(SCRIPT_DIR / "_work")
+    project_name = project.get("project_name") or cfg.get("project_name") or Path(media_dir).name or "drama_project"
+    analysis_v2 = project.get("analysis_v2") or cfg.get("analysis_v2") or os.path.join(work_dir, "analysis_v2.txt")
+    analysis_v3 = project.get("analysis_v3") or cfg.get("analysis_v3") or os.path.join(work_dir, "analysis_v3.txt")
+    analysis_fallback = project.get("analysis_fallback") or cfg.get("analysis_fallback") or os.path.join(work_dir, "analysis.txt")
+    frames_dir = project.get("frames_dir") or cfg.get("frames_dir") or os.path.join(work_dir, "_frames_v2")
+    molecular_dir = project.get("molecular_dir") or cfg.get("molecular_dir") or os.path.join(work_dir, "_work_molecular")
+    bgm = project.get("bgm") or cfg.get("bgm") or cfg.get("default_bgm") or ""
+    episode_glob = project.get("episode_glob") or cfg.get("episode_glob") or "*.mp4"
+    episode_count = project.get("episode_count") or cfg.get("episode_count")
+    name_template = project.get("episode_name_template") or cfg.get("episode_name_template") or "{ep}.mp4"
+
+    return {
+        "project_name": project_name,
+        "media_dir": media_dir,
+        "work_dir": work_dir,
+        "analysis_v2": analysis_v2,
+        "analysis_v3": analysis_v3,
+        "analysis_fallback": analysis_fallback,
+        "frames_dir": frames_dir,
+        "molecular_dir": molecular_dir,
+        "bgm": bgm,
+        "episode_glob": episode_glob,
+        "episode_count": episode_count,
+        "episode_name_template": name_template,
+        "config": cfg,
+    }
+
+
+def episode_filename(ep, name_template=None):
+    """根据统一模板生成集数文件名。"""
+    template = name_template or "{ep}.mp4"
+    ep_int = int(ep)
+    return template.format(ep=ep_int, ep02=f"{ep_int:02d}", ep03=f"{ep_int:03d}")
+
+
+def get_audio_analysis_config(config=None):
+    """读取音频分析配置并补默认值。"""
+    cfg = dict(config or _tcfg)
+    audio_cfg = dict(cfg.get("audio_analysis") or {})
+    return {
+        "enabled": bool(audio_cfg.get("enabled", False)),
+        "whisper_model": audio_cfg.get("whisper_model", "medium"),
+        "window_seconds": float(audio_cfg.get("window_seconds", 2.5) or 2.5),
+        "speech_peak_chars": float(audio_cfg.get("speech_peak_chars", 14) or 14),
+        "energy_peak_threshold": float(audio_cfg.get("energy_peak_threshold", 0.72) or 0.72),
+    }
+
+
+def audio_cache_dir(work_dir=None):
+    """音频缓存目录。"""
+    base = Path(work_dir) if work_dir else (SCRIPT_DIR / "_work")
+    cache_dir = base / "_audio_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def episode_audio_cache_paths(ep, work_dir=None):
+    """返回单集音频缓存路径。"""
+    ep_tag = f"ep{int(ep):02d}"
+    base = audio_cache_dir(work_dir)
+    return {
+        "wav": str(base / f"{ep_tag}.wav"),
+        "vtt": str(base / f"{ep_tag}.vtt"),
+        "json": str(base / f"{ep_tag}.audio.json"),
+    }
+
+
+def write_json(path, payload):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def read_json(path, default=None):
+    if not path or not os.path.exists(path):
+        return default
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return default
 
 # ═══════════════════════════════════════════
 # 1. VisionCache — 审片结果缓存（断点续传）
@@ -205,7 +299,24 @@ def parse_vision_line(line):
             result["subtitle_text"] = v2.get("subtitle_text", "")
             result["event_subtype"] = event_subtype
             result["chars_text"] = chars_text
-            result["_v2"] = v2  # 保留完整V2数据
+            # 音频增强字段 (summarize_audio_window)
+            result["audio_energy"] = int(v2.get("audio_energy", 1) or 1)
+            result["speech_density"] = int(v2.get("speech_density", 1) or 1)
+            result["has_speech_peak"] = bool(v2.get("has_speech_peak", False))
+            result["beat_nearby"] = bool(v2.get("beat_nearby", False))
+            result["transcript_excerpt"] = (v2.get("transcript_excerpt", "") or "").strip()
+            result["dialogue_anchor"] = v2.get("dialogue_anchor", "none") or "none"
+            # V3 剪辑决策字段 (build_analysis_v3.py enrich 平铺到顶层)
+            result["promo_value"] = int(v2.get("promo_value", 1) or 1)
+            result["hook_value"] = int(v2.get("hook_value", 1) or 1)
+            result["cut_role"] = v2.get("cut_role", "unknown")
+            result["best_cut"] = v2.get("best_cut", "before_action")
+            result["pre_roll"] = float(v2.get("pre_roll", 1.0) or 1.0)
+            result["post_roll"] = float(v2.get("post_roll", 1.5) or 1.5)
+            result["suggested_duration"] = float(v2.get("suggested_duration", 2.5) or 2.5)
+            result["action_direction"] = v2.get("action_direction", "静止")
+            result["emotion_trend"] = v2.get("emotion_trend", "稳定")
+            result["_v2"] = v2  # 保留完整V2/V3数据
             result["scene_types"] = list(set(result["scene_types"]))
             return result
         except (ValueError, TypeError, KeyError):
@@ -601,6 +712,107 @@ def _parse_vtt_time(ts):
     else:
         h, m, s = 0, parts[0], parts[1] if len(parts) > 1 else 0
     return int(h) * 3600 + int(m) * 60 + int(s) + float(f"0.{frac}")
+
+
+def parse_whisper_vtt(vtt_path):
+    """解析 whisper VTT，返回带文本的分段列表。"""
+    segments = []
+    if not vtt_path or not os.path.exists(vtt_path):
+        return segments
+
+    lines = [line.rstrip('\n') for line in open(vtt_path, 'r', encoding='utf-8').readlines()]
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if '-->' not in line:
+            i += 1
+            continue
+        parts = line.split(' --> ')
+        if len(parts) != 2:
+            i += 1
+            continue
+        start = _parse_vtt_time(parts[0])
+        end = _parse_vtt_time(parts[1])
+        i += 1
+        text_lines = []
+        while i < len(lines) and lines[i].strip():
+            text_lines.append(lines[i].strip())
+            i += 1
+        text = ' '.join(text_lines).strip()
+        if text:
+            segments.append({
+                'start': round(start, 3),
+                'end': round(end, 3),
+                'text': text,
+                'chars': len(text),
+                'duration': round(max(0.0, end - start), 3),
+            })
+        i += 1
+    return segments
+
+
+def summarize_audio_window(segments, center_time, window_seconds=2.5,
+                           speech_peak_chars=14, energy_peak_threshold=0.72):
+    """
+    基于 Whisper 分段近似生成时间窗内的音频特征。
+    不依赖 librosa，先用对白密度/字数变化做代理特征。
+    """
+    center_time = float(center_time or 0)
+    half = max(0.5, float(window_seconds) / 2.0)
+    start = max(0.0, center_time - half)
+    end = center_time + half
+    overlaps = []
+    for seg in segments or []:
+        ov_start = max(start, seg['start'])
+        ov_end = min(end, seg['end'])
+        if ov_end <= ov_start:
+            continue
+        ratio = (ov_end - ov_start) / max(0.001, seg['end'] - seg['start'])
+        overlaps.append((seg, ratio, ov_start, ov_end))
+
+    excerpt_parts = []
+    covered = 0.0
+    total_chars = 0.0
+    peak_chars = 0.0
+    near_boundary = False
+    for seg, ratio, ov_start, ov_end in overlaps:
+        excerpt_parts.append(seg['text'])
+        chars_here = seg['chars'] * ratio
+        total_chars += chars_here
+        peak_chars = max(peak_chars, chars_here)
+        covered += (ov_end - ov_start)
+        if abs(seg['start'] - center_time) <= 0.45 or abs(seg['end'] - center_time) <= 0.45:
+            near_boundary = True
+
+    window_span = max(0.5, end - start)
+    coverage_ratio = min(1.0, covered / window_span)
+    chars_per_second = total_chars / window_span
+    speech_density = max(1, min(5, int(round(chars_per_second / 2.2)) + 1 if total_chars > 0 else 1))
+    audio_energy = max(1, min(5, int(round((coverage_ratio * 2.2) + (chars_per_second / 3.5))) + 1 if total_chars > 0 else 1))
+    has_speech_peak = peak_chars >= float(speech_peak_chars)
+    beat_nearby = has_speech_peak or near_boundary or coverage_ratio >= float(energy_peak_threshold)
+
+    if not overlaps:
+        conf = 'low'
+    elif len(overlaps) >= 2 or coverage_ratio >= 0.55:
+        conf = 'high'
+    else:
+        conf = 'medium'
+
+    excerpt = ' '.join(dict.fromkeys([p for p in excerpt_parts if p])).strip()
+    excerpt = re.sub(r'\s+', ' ', excerpt)[:80]
+
+    return {
+        'audio_energy': int(audio_energy),
+        'speech_density': int(speech_density),
+        'has_speech_peak': bool(has_speech_peak),
+        'beat_nearby': bool(beat_nearby),
+        'transcript_excerpt': excerpt,
+        'audio_event_conf': conf,
+        'dialogue_anchor': 'boundary' if near_boundary else ('dense_speech' if overlaps else 'none'),
+        'speech_coverage': round(coverage_ratio, 3),
+        'chars_per_second': round(chars_per_second, 3),
+    }
 
 
 # ═══════════════════════════════════════════
