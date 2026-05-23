@@ -68,6 +68,15 @@ def narrative_stage_order(selected_clips, mol_type="hook_clash"):
                     result.append(result.pop(i))
                     break
 
+    # ── 序幕保留位：开头强制插入 1 帧 EP01 早期内容（ts<60s）──
+    # 用于建立"穿越前"的现代世界对比，即使 hook 很低
+    early_ep01 = [c for c in result if int(c.get('ep', 0) or 0) == 1 and (c.get('time', 0) or c.get('ts', 0) or 0) < 60]
+    if early_ep01:
+        early_ep01.sort(key=lambda c: c.get('time', 0) or c.get('ts', 0) or 0)
+        best_early = early_ep01[0]  # 取时间最早的帧（真正的"开场"）
+        if result[0] != best_early:
+            result = [best_early] + [c for c in result if c != best_early]
+
     return result
 
 
