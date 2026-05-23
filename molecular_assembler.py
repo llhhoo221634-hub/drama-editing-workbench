@@ -5,7 +5,7 @@ import os, subprocess, json
 
 from config import get_engine_config, get_project_config
 from edit_utils import (parallel_cut_clips, write_json, episode_filename)
-from molecule_types import MOLECULE_TYPES, TRANSITION_PROFILE_MAP, molecular_score, is_high_conflict_clip, clip_event_text
+from molecule_types import MOLECULE_TYPES, TRANSITION_PROFILE_MAP, molecular_score, is_high_conflict_clip, clip_event_text, build_molecule_config
 
 def _check_run(proc, label="ffmpeg", output_path=None):
     """检查 subprocess 运行结果，失败时抛异常。"""
@@ -22,9 +22,16 @@ _project = get_project_config()
 _render_cfg = (_cfg.get("render") or {}) if isinstance(_cfg.get("render"), dict) else {}
 SOURCE_DIR = _project["media_dir"]
 OUTPUT_DIR = _project["molecular_dir"]
-BGM_FILE = _project["bgm"]
+_BGM_CFG = _project.get("bgm", "")
 PROJECT_NAME = _project["project_name"]
 EPISODE_NAME_TEMPLATE = _project["episode_name_template"]
+
+def _resolve_bgm(mol_type):
+    """解析 BGM 路径。字典格式优先匹配分子类型，无匹配回退 default。"""
+    if isinstance(_BGM_CFG, dict):
+        path = _BGM_CFG.get(mol_type, "") or _BGM_CFG.get("default", "")
+        return path if os.path.exists(path) else _BGM_CFG.get("default", "")
+    return str(_BGM_CFG) if os.path.exists(str(_BGM_CFG)) else ""
 FFMPEG = _cfg.get("ffmpeg", "") or "ffmpeg"
 FFPROBE = _cfg.get("ffprobe", "") or "ffprobe"
 
@@ -55,29 +62,45 @@ def _mol_output_path(mol_type):
     return os.path.join(OUTPUT_DIR, f"{PROJECT_NAME}_宣发_{label}.mp4")
 
 
-def cut_molecular_clips(selected, mol_type):
+def cut_molecular_clips(selected, mol_type, mdef_override=None):
     """按分子类型天花板 + V3 决策字段统一切割。
     V3 提供 per-frame 的 pre_roll / suggested_duration（相对偏移策略），
-    分子类型提供 clip_dur 上下限（硬性节奏约束）。"""
-    mdef = MOLECULE_TYPES[mol_type]
+    分子类型提供 clip_dur 上下限（硬性节奏约束）。
+
+    每个候选帧只取 1 个最优切点，不为了凑时长多切。
+    如果时长不足，优先放宽 clip_dur 上限而非增加切点数量。
+
+    mdef_override: 可选，传入 build_molecule_config() 调整后的模板。
+    """
+    mdef = mdef_override or MOLECULE_TYPES[mol_type]
     clip_dur_range = mdef.get('clip_dur', (3, 5))
     min_dur = clip_dur_range[0]
     max_dur = clip_dur_range[1]
+    target_dur = mdef.get('target_dur', 90)
 
+    # 计算初始 clip_specs，每个帧取 1 个切点
     clip_specs = []
     for i, c in enumerate(selected):
         ep = str(c.get('ep', '1'))
         t = c.get('time', 0)
 
-        # V3 统一公式: start = ts - pre_roll, 所有 cut_role 共用
+        # V3 统一公式: start = ts - pre_roll
         pre_roll = float(c.get('pre_roll', 1.0) or 1.0)
         suggested_dur = float(c.get('suggested_duration', 3.0) or 3.0)
         start = max(0, t - pre_roll)
-        dur = max(min_dur, min(suggested_dur, max_dur))
 
-        # 金句卡点特殊处理: 上限压到 2.5s 保证 BGM 卡拍
+        # 在 clip_dur 范围内选择时长，以 suggested 为准，不自动拉满到 max_dur
+        if suggested_dur >= max_dur:
+            dur = max_dur
+        elif suggested_dur <= min_dur:
+            dur = min_dur
+        else:
+            # suggested 在范围内，直接使用
+            dur = suggested_dur
+
+        # 金句卡点特殊处理: 短节奏保持
         if mol_type == 'quote_rhythm':
-            dur = min(dur, 2.5)
+            dur = min(dur, 3.0)
 
         clip_specs.append({
             "id": f"{mol_type}_{i+1:02d}_EP{int(ep):02d}",
@@ -85,6 +108,25 @@ def cut_molecular_clips(selected, mol_type):
             "start": round(start, 1),
             "dur": round(dur, 1),
         })
+
+    # 时长检查：不足时放宽 clip_dur 上限，而非增加切点
+    total_dur = sum(s['dur'] for s in clip_specs)
+    if total_dur < target_dur * 0.8 and len(clip_specs) > 0:
+        # 需要补充时长：逐个拉长片段到 max_dur，不超原上限的 1.5 倍
+        needed = target_dur * 0.9 - total_dur
+        stretch_max = max_dur * 1.5  # 单片段最多拉长 50%
+        for s in clip_specs:
+            if needed <= 0:
+                break
+            room = stretch_max - s['dur']
+            if room > 0:
+                add = min(room, needed / len(clip_specs) * 2)  # 分散拉长
+                s['dur'] = round(s['dur'] + add, 1)
+                needed -= add
+
+        new_total = sum(s['dur'] for s in clip_specs)
+        if new_total > total_dur:
+            print(f"    [时长补充] 拉长 clip_dur: {total_dur:.0f}s → {new_total:.0f}s")
 
     grade = mdef.get('grade',
         "eq=contrast=1.25:saturation=1.1:gamma=1.05,colorbalance=rs=0.02:gs=-0.02:bs=-0.05")
@@ -97,9 +139,33 @@ def cut_molecular_clips(selected, mol_type):
     return clip_specs, results, ok
 
 
-def assemble_molecular(clip_specs, results, mol_type, xfade_type='fade'):
+def _make_silent_tail(mol_type, clip_files, clip_specs, output_dir):
+    """为情感共鸣类生成 2s 静默留白尾段。
+    取最后一个片段作 50% 慢放 + 静音 + fade-out，形成情绪沉淀。"""
+    if not clip_files or not clip_specs:
+        return None
+    last_clip = clip_files[-1]
+    tail_path = os.path.join(output_dir, f"_tail_breath_{mol_type}.mp4")
+    try:
+        r = subprocess.run([
+            FFMPEG, "-y", "-i", last_clip,
+            "-vf", "setpts=2.0*PTS,fade=t=out:st=1.0:d=1.0",
+            "-af", "volume=0:enable='between(t,0,2)'",
+            "-t", "2.0",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "21",
+            "-c:a", "aac", "-b:a", "192k", tail_path
+        ], capture_output=True, encoding='utf-8', errors='replace')
+        _check_run(r, "ffmpeg")
+        if os.path.exists(tail_path) and os.path.getsize(tail_path) > 1024:
+            return tail_path
+    except Exception:
+        pass
+    return None
+
+
+def assemble_molecular(clip_specs, results, mol_type, xfade_type='fade', mdef_override=None):
     """三段式组装 + BGM + xfade转场"""
-    mdef = MOLECULE_TYPES[mol_type]
+    mdef = mdef_override or MOLECULE_TYPES[mol_type]
 
     clip_files = [os.path.join(OUTPUT_DIR, f"{s['id']}.mp4") for s in clip_specs
                   if results.get(s['id'], {}).get('ok')]
@@ -107,9 +173,18 @@ def assemble_molecular(clip_specs, results, mol_type, xfade_type='fade'):
     # 过滤掉过小的损坏文件（< 1KB）
     clip_files = [f for f in clip_files if os.path.exists(f) and os.path.getsize(f) > 1024]
 
-    if len(clip_files) < mdef.get('min_clips', 2):
+    if len(clip_files) < max(3, mdef.get('min_clips', 2) // 2):
         print(f"  [ERR] 有效片段不足 {len(clip_files)}")
         return None
+
+    # P1: 情感共鸣尾段留白 - 自动追加 1.5-2s 慢放静默
+    tail_breath_file = None
+    if mol_type == 'emotional_resonance':
+        tail_breath_file = _make_silent_tail(mol_type, clip_files, clip_specs, OUTPUT_DIR)
+        if tail_breath_file:
+            clip_files.append(tail_breath_file)
+            tail_spec = {"id": f"{mol_type}_tail_breath", "ep": clip_specs[-1]['ep'] if clip_specs else "1", "dur": 2.0}
+            clip_specs.append(tail_spec)
 
     # 生成黑屏(3秒结尾)
     black_file = os.path.join(OUTPUT_DIR, f"_black_{mol_type}.mp4")
@@ -243,11 +318,12 @@ def assemble_molecular(clip_specs, results, mol_type, xfade_type='fade'):
     # BGM混合
     output_path = _mol_output_path(mol_type)
     total_dur = sum(s.get('dur', 5) for s in clip_specs) + 3
+    bgm_path = _resolve_bgm(mol_type)
     bgm_vol = mdef.get('bgm_vol', 0.25)
 
-    if os.path.exists(BGM_FILE):
+    if bgm_path and os.path.exists(bgm_path):
         cmd = [
-            FFMPEG, "-y", "-i", concat_out, "-i", BGM_FILE,
+            FFMPEG, "-y", "-i", concat_out, "-i", bgm_path,
             "-filter_complex",
             f"[1:a]atrim=0:{total_dur+3},volume={bgm_vol},afade=t=out:st={total_dur-3}:d=3[bgm];"
             f"[0:a][bgm]amix=inputs=2:duration=first[aout]",
@@ -382,7 +458,7 @@ def build_molecule_timeline(mol_type, selected, clip_specs, final_path=None, dur
         "audio_tracks": {
             "dialogue": {"source": "source_clips", "windows": dialogue_windows},
             "bgm": {
-                "path": BGM_FILE if os.path.exists(BGM_FILE) else "",
+                "path": bgm_path,
                 "volume": mdef.get("bgm_vol", 0.25),
                 "style": mdef.get("bgm_style", "default"),
             },

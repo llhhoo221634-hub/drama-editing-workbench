@@ -6,9 +6,9 @@ MOLECULE_TYPES = {
     "hook_clash": {
         "name": "冲突钩子",
         "target_dur": 90,
-        "min_clips": 10,
-        "max_clips": 30,
-        "clip_dur": (2.0, 5.0),
+        "min_clips": 15,
+        "max_clips": 35,
+        "clip_dur": (3.0, 6.0),
         "emo_min": 4,
         "events": ["冲突", "打斗", "威胁", "对峙"],
         "narrative_beats": {"hook": 0.4, "inciting": 0.4, "rising": 0.2},
@@ -20,9 +20,9 @@ MOLECULE_TYPES = {
     "identity_twist": {
         "name": "身份反转",
         "target_dur": 100,
-        "min_clips": 10,
-        "max_clips": 35,
-        "clip_dur": (2.0, 4.5),
+        "min_clips": 15,
+        "max_clips": 40,
+        "clip_dur": (3.0, 5.5),
         "emo_min": 3,
         "events": ["对峙", "跪地", "冲突"],
         "narrative_beats": {"setup": 0.2, "inciting": 0.3, "rising": 0.3, "climax": 0.2},
@@ -34,9 +34,9 @@ MOLECULE_TYPES = {
     "emotional_resonance": {
         "name": "情感共鸣",
         "target_dur": 110,
-        "min_clips": 10,
-        "max_clips": 35,
-        "clip_dur": (2.0, 5.0),
+        "min_clips": 15,
+        "max_clips": 40,
+        "clip_dur": (3.0, 6.0),
         "emo_min": 2,
         "events": ["悲伤", "日常"],
         "narrative_beats": {"setup": 0.3, "rising": 0.3, "climax": 0.2, "transition": 0.2},
@@ -48,9 +48,9 @@ MOLECULE_TYPES = {
     "quote_rhythm": {
         "name": "金句卡点",
         "target_dur": 90,
-        "min_clips": 10,
-        "max_clips": 30,
-        "clip_dur": (1.5, 4.0),
+        "min_clips": 15,
+        "max_clips": 35,
+        "clip_dur": (2.0, 5.0),
         "emo_min": 2,
         "events": ["威胁", "对峙", "冲突"],
         "narrative_beats": {"inciting": 0.4, "rising": 0.3, "climax": 0.3},
@@ -62,9 +62,9 @@ MOLECULE_TYPES = {
     "cinematic_beauty": {
         "name": "光影美学",
         "target_dur": 60,
-        "min_clips": 6,
-        "max_clips": 12,
-        "clip_dur": (3.0, 8.0),
+        "min_clips": 8,
+        "max_clips": 20,
+        "clip_dur": (4.0, 10.0),
         "emo_min": 2,
         "events": None,  # 不限事件
         "shots": ["全景", "特写"],
@@ -77,9 +77,9 @@ MOLECULE_TYPES = {
     "suspense_hook": {
         "name": "悬念钩子",
         "target_dur": 90,
-        "min_clips": 10,
-        "max_clips": 30,
-        "clip_dur": (2.0, 5.0),
+        "min_clips": 15,
+        "max_clips": 35,
+        "clip_dur": (3.0, 6.0),
         "emo_min": 3,
         "events": ["冲突", "威胁", "对峙"],
         "narrative_beats": {"hook": 0.4, "inciting": 0.3, "rising": 0.3},
@@ -130,6 +130,76 @@ def is_high_conflict_clip(c):
         c.get('event_conf', '') != '模糊' and
         c.get('usable', True)
     )
+
+
+def build_molecule_config(mdef, user_duration_seconds=None):
+    """根据用户要求的时长动态调整模板参数。
+
+    输入：
+        mdef: 原始模板定义（来自 MOLECULE_TYPES）
+        user_duration_seconds: 用户目标时长（秒），None 则使用模板默认 target_dur
+
+    输出：
+        调整后的模板副本（min_clips、clip_dur、narrative_beats 三项按比例缩放）
+
+    缩放规则：
+        - clip_dur 上下限按 sqrt(duration / base_dur) 缩放
+        - min_clips 按线性缩放
+        - narrative_beats 比例：短片更偏 hook/inciting，长片更偏 climax/transition
+    """
+    import copy, math
+    mdef = copy.deepcopy(mdef)
+    base_dur = mdef.get('target_dur', 90)
+    target_dur = user_duration_seconds if user_duration_seconds else base_dur
+
+    if target_dur == base_dur:
+        return mdef
+
+    ratio = target_dur / base_dur
+    sqrt_ratio = math.sqrt(ratio)
+
+    # 更新 target_dur
+    mdef['target_dur'] = target_dur
+
+    # clip_dur 上下限按 sqrt 缩放（时长加倍 → 片段约 1.4× 长，而不是直接 2×）
+    lo, hi = mdef.get('clip_dur', (3, 5))
+    new_lo = round(max(1.5, lo * sqrt_ratio), 1)
+    new_hi = round(min(12.0, hi * sqrt_ratio), 1)
+    if new_lo >= new_hi:
+        new_lo = new_hi - 1.0
+    mdef['clip_dur'] = (new_lo, new_hi)
+
+    # min_clips 按线性缩放
+    old_min = mdef.get('min_clips', 10)
+    new_min = max(4, round(old_min * ratio))
+    mdef['min_clips'] = new_min
+
+    # max_clips 按线性缩放
+    old_max = mdef.get('max_clips', 30)
+    new_max = max(new_min + 2, round(old_max * ratio))
+    mdef['max_clips'] = new_max
+
+    # narrative_beats 微调：短片更偏 hook/inciting，长片更偏 climax/transition
+    beats = mdef.get('narrative_beats', {})
+    if beats and ratio != 1.0:
+        new_beats = {}
+        for beat, weight in beats.items():
+            if beat in ('hook', 'inciting'):
+                # 短片时增加 hook/inciting 占比
+                factor = 1.0 + (1.0 - ratio) * 0.3  # ratio < 1 → factor > 1
+            elif beat in ('climax', 'transition'):
+                # 长片时增加 climax/transition 占比
+                factor = 1.0 + (ratio - 1.0) * 0.3  # ratio > 1 → factor > 1
+            else:
+                factor = 1.0
+            new_beats[beat] = round(max(0.05, min(0.7, weight * factor)), 2)
+        # 归一化
+        total = sum(new_beats.values())
+        if total > 0:
+            new_beats = {k: round(v / total, 2) for k, v in new_beats.items()}
+        mdef['narrative_beats'] = new_beats
+
+    return mdef
 
 
 def molecular_score(c, mol_type):

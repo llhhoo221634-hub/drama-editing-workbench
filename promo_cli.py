@@ -24,7 +24,7 @@ from genre_engine import (_genre_detect_two_pass, multi_pass_rank,
                           prefilter_for_direction, enforce_narrative_diversity,
                           tag_narrative_function)
 
-from molecule_types import MOLECULE_TYPES, FUSION_WEIGHTS, TRANSITION_PROFILE_MAP, clip_event_text, molecular_score, is_high_conflict_clip
+from molecule_types import MOLECULE_TYPES, FUSION_WEIGHTS, TRANSITION_PROFILE_MAP, clip_event_text, molecular_score, is_high_conflict_clip, build_molecule_config
 from selection_scorer import (molecular_fusion_score,
                               narrative_boost, golden_quote_boost,
                               load_story_profile, load_golden_quotes, load_character_relationships,
@@ -43,7 +43,6 @@ SOURCE_DIR = _project["media_dir"]
 ANALYSIS_FILE = _project["analysis_v3"]
 ANALYSIS_FALLBACK = _project["analysis_fallback"]
 OUTPUT_DIR = _project["molecular_dir"]
-BGM_FILE = _project["bgm"]
 PROJECT_NAME = _project["project_name"]
 EPISODE_NAME_TEMPLATE = _project["episode_name_template"]
 FFMPEG = _cfg.get("ffmpeg", "ffmpeg")
@@ -67,9 +66,9 @@ def molecule_output_path(mol_type):
     return os.path.join(OUTPUT_DIR, f"{PROJECT_NAME}_宣发_{label}.mp4")
 
 
-def molecular_rank(pool, mol_type, top_n=10):
+def molecular_rank(pool, mol_type, top_n=10, mdef_override=None):
     """分子类型特定的排序 + 叙事多样性"""
-    mdef = MOLECULE_TYPES[mol_type]
+    mdef = mdef_override or MOLECULE_TYPES[mol_type]
 
     # Type-weighted fusion score as primary sort key
     ranked = sorted(pool, key=lambda c: -molecular_fusion_score(c, mol_type))
@@ -131,15 +130,19 @@ def molecular_rank(pool, mol_type, top_n=10):
     return spread[:n]
 
 
-def process_molecule(clips, mol_type, dry_run=False, export_csv=False, review_selections=None, xfade_type='fade'):
+def process_molecule(clips, mol_type, dry_run=False, export_csv=False, review_selections=None, xfade_type='fade', user_duration=None):
     """处理单条分子宣发。
     review_selections: 可选 dict，key 为 (ep, time)，value 为 keep (bool)。
-                       传入时跳过自动选片，直接使用人工审核后的片段列表。"""
+                       传入时跳过自动选片，直接使用人工审核后的片段列表。
+    user_duration: 用户指定目标时长（秒），None 则使用模板默认值。"""
 
-    mdef = MOLECULE_TYPES[mol_type]
+    base_mdef = MOLECULE_TYPES[mol_type]
+    mdef = build_molecule_config(base_mdef, user_duration)
     print(f"\n{'='*60}")
     print(f"  分子类型: {mdef['name']} ({mol_type})")
-    print(f"  目标: {mdef['target_dur']}s | {mdef['min_clips']}-{mdef['max_clips']}片段")
+    clip_dur = mdef.get('clip_dur', (3, 5))
+    print(f"  目标: {mdef['target_dur']}s | {mdef['min_clips']}-{mdef['max_clips']}片段 | clip_dur={clip_dur[0]}-{clip_dur[1]}s")
+    print(f"  叙事节拍: {mdef.get('narrative_beats', {})}")
     print(f"  规则: {mdef['hook_rule']}")
     print(f"{'='*60}")
 
@@ -151,7 +154,7 @@ def process_molecule(clips, mol_type, dry_run=False, export_csv=False, review_se
         # 补充 clips 中未出现在 review_selections 但在同分子类型中评分高的片段
         if len(kept) < mdef['max_clips']:
             pool = molecular_filter(clips, mol_type)
-            for c in molecular_rank(pool, mol_type, top_n=mdef['max_clips'] * 3):
+            for c in molecular_rank(pool, mol_type, top_n=mdef['max_clips'] * 3, mdef_override=mdef):
                 key = (int(c.get('ep', '0') or 0), int(c.get('time', 0)))
                 if not review_selections.get(key, True):  # 明确被标记为 N 的跳过
                     continue
@@ -162,8 +165,8 @@ def process_molecule(clips, mol_type, dry_run=False, export_csv=False, review_se
         selected = kept[:mdef['max_clips']]
         print(f"  [人工审核] 确认 {len(selected)} 片段 (从审核表读取)")
     else:
-        # 预筛选
-        pool = molecular_filter(clips, mol_type)
+        # 预筛选（传入已适配的 mdef）
+        pool = molecular_filter(clips, mol_type, mdef_override=mdef)
         print(f"  预筛选: {len(clips)} → {len(pool)} 片段")
 
         if len(pool) < mdef['min_clips']:
@@ -171,24 +174,26 @@ def process_molecule(clips, mol_type, dry_run=False, export_csv=False, review_se
             return None
 
         # 排序 + 叙事多样性
-        ranked = molecular_rank(pool, mol_type, top_n=mdef['max_clips'])
+        ranked = molecular_rank(pool, mol_type, top_n=mdef['max_clips'], mdef_override=mdef)
         selected = apply_hard_constraints(ranked, target_count=mdef['min_clips'],
                                           max_per_ep=4, max_same_shot=2)
         selected = narrative_order(selected)
-        # 动态低水位：候选不够时自动降低 min_clips
-        effective_min = min(mdef['min_clips'], max(8, len(ranked) // 2))
+        # 动态低水位：候选不够时放宽硬约束重新选片
+        effective_min = mdef['min_clips']
         if len(selected) < effective_min:
-            # V2 only fallback: V1 数据 event 为 "?" 且有极短描述
-            v2_only = [c for c in ranked if (c.get('aesthetic_score', 0) or 0) >= 5
-                        and (c.get('_v2', {}).get('event', '') or '') != '?'
-                        and len(c.get('hint', '') or c.get('desc_clean', '') or c.get('desc', '') or '') > 15]
-            for fallback_ep, fallback_shot in [(6, 3), (10, 5)]:
-                relaxed = apply_hard_constraints(v2_only, max_per_ep=fallback_ep, max_same_shot=fallback_shot)
-                if len(relaxed) >= 6:
-                    selected = relaxed[:mdef['max_clips']]
-                    break
+            # 放宽硬约束：提高 max_per_ep、max_same_shot
+            relaxed = apply_hard_constraints(ranked, target_count=effective_min,
+                                            max_per_ep=6, max_same_shot=3, min_time_apart=3)
+            if len(relaxed) >= effective_min:
+                selected = relaxed[:mdef['max_clips']]
             else:
-                selected = v2_only[:mdef['max_clips']]
+                # V2 only fallback: 从排名中取 top-N
+                v2_only = [c for c in ranked if (c.get('aesthetic_score', 0) or 0) >= 3
+                            and len(c.get('hint', '') or c.get('desc_clean', '') or c.get('desc', '') or '') > 15]
+                if len(v2_only) >= effective_min:
+                    selected = v2_only[:mdef['max_clips']]
+                else:
+                    selected = ranked[:mdef['max_clips']]
     print(f"\n  选中 {len(selected)} 片段:")
     for i, c in enumerate(selected):
         ep = c.get('ep', '?')
@@ -236,8 +241,7 @@ def process_molecule(clips, mol_type, dry_run=False, export_csv=False, review_se
 
     if dry_run:
         # 生成模拟 clip_specs 用于 timeline 预览
-        mdef_dr = MOLECULE_TYPES[mol_type]
-        clip_dur_range = mdef_dr.get('clip_dur', (3, 5))
+        clip_dur_range = mdef.get('clip_dur', (3, 5))
         default_dur = (clip_dur_range[0] + clip_dur_range[1]) / 2
         dry_specs = []
         for i, c in enumerate(selected):
@@ -255,17 +259,17 @@ def process_molecule(clips, mol_type, dry_run=False, export_csv=False, review_se
         print(f"  Timeline: {timeline_path}")
         return selected
 
-    # 切割
-    clip_specs, results, ok = cut_molecular_clips(selected, mol_type)
+    # 切割（传入已适配的 mdef 确保时长控制一致）
+    clip_specs, results, ok = cut_molecular_clips(selected, mol_type, mdef_override=mdef)
     print(f"  切割: {ok}/{len(results)} 成功")
 
-    effective_min = min(mdef["min_clips"], max(8, ok // 2))
+    effective_min = mdef["min_clips"]
     if ok < effective_min:
         print(f"  [ERR] 有效片段不足")
         return None
 
     # 组装
-    final = assemble_molecular(clip_specs, results, mol_type, xfade_type=xfade_type)
+    final = assemble_molecular(clip_specs, results, mol_type, xfade_type=xfade_type, mdef_override=mdef)
     if final and os.path.exists(final):
         dur = float(subprocess.run(
             [FFPROBE, "-v", "error", "-show_entries", "format=duration",
@@ -293,6 +297,8 @@ def main():
                         choices=['fade', 'pixelize', 'smoothleft', 'none'],
                         help='片段间转场效果 (默认 fade)')
     parser.add_argument('--quick', action='store_true', help='快速模式: 跳过 xfade + legacy 数据')
+    parser.add_argument('--duration', '-d', type=int, default=None,
+                        help='用户指定目标时长（秒），覆盖模板默认 target_dur')
     args = parser.parse_args()
 
     if args.quick:
@@ -357,7 +363,8 @@ def main():
             r = process_molecule(clips, mt, dry_run=args.dry_run,
                                 export_csv=export_csv,
                                 review_selections=review_selections,
-                                xfade_type=args.xfade)
+                                xfade_type=args.xfade,
+                                user_duration=args.duration)
             results.append(r)
         except Exception as e:
             print(f"  [ERR] {mt} 失败: {e}")

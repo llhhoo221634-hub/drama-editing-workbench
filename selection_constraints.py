@@ -13,9 +13,9 @@ def _is_legacy_data(clips):
     return has_audio < len(clips) * 0.2
 
 
-def _molecular_filter_pass(clips, mol_type, strict=True):
+def _molecular_filter_pass(clips, mol_type, strict=True, mdef_override=None):
     """单次过滤。strict=True 为正常模式，strict=False 为降级模式（放宽阈值）。"""
-    mdef = MOLECULE_TYPES[mol_type]
+    mdef = mdef_override or MOLECULE_TYPES[mol_type]
     pool = []
 
     # 降级模式：emotion 阈值降低 1 级，跳过事件强匹配和人脸要求
@@ -33,8 +33,20 @@ def _molecular_filter_pass(clips, mol_type, strict=True):
             continue
         if c.get('event_conf', '') == '模糊' and c.get('visual_quality', 3) <= 2:
             continue
-        if c.get('visual_quality', 3) < 3:
-            continue
+
+        # 光影美学类画质下限 ≥ 4（严格过滤，避免 V1 legacy 混入）
+        if mol_type == 'cinematic_beauty':
+            vq = c.get('visual_quality', 3)
+            if vq < 4:
+                # 放宽条件：vq=3 但 event_subtype 不为"无"且描述 ≥ 30 字的视为 quality 替代
+                ev_sub = c.get('event_subtype', '无') or '无'
+                desc_len = len(c.get('desc_clean', '') or c.get('desc', '') or '')
+                if not (vq >= 3 and ev_sub != '无' and desc_len >= 30):
+                    continue
+        else:
+            if c.get('visual_quality', 3) < 3:
+                continue
+
         desc = c.get('desc_clean', c.get('desc', ''))
         if any(k in desc for k in ['似乎', '可能', '大概', '仿佛', '看起来像', '似在']):
             continue
@@ -47,13 +59,19 @@ def _molecular_filter_pass(clips, mol_type, strict=True):
                 continue
         if mol_type == 'cinematic_beauty' and c.get('face_quality', '') == '模糊':
             continue
-        # cinematic_beauty: 排除低质量帧
-        if mol_type == 'cinematic_beauty' and c.get('face_quality', '') == '模糊':
-            continue
+
         # 排除 V1 legacy 数据（desc < 30 字 = 旧版扫描数据）
         desc_len = len(c.get('desc_clean', '') or c.get('desc', '') or '')
         if desc_len < 30:
             continue
+
+        # cinematic_beauty: 额外排除 V1 legacy（event="" 或无 event_subtype）
+        if mol_type == 'cinematic_beauty':
+            v2 = c.get('_v2', {})
+            ev = (v2.get('event', '') or '').strip()
+            ev_sub = (c.get('event_subtype', '') or v2.get('event_subtype', '') or '').strip()
+            if not ev and ev_sub in ('', '无', '无'):
+                continue
 
 
         # 事件过滤：降级模式下改为加分而非硬过滤
@@ -76,30 +94,43 @@ def _molecular_filter_pass(clips, mol_type, strict=True):
     return pool
 
 
-def molecular_filter(clips, mol_type):
+def molecular_filter(clips, mol_type, mdef_override=None):
     """按分子类型筛选片段池。
-    对 legacy 数据自动降级：先尝试严格过滤，不足则放宽阈值。"""
-    mdef = MOLECULE_TYPES[mol_type]
+    对 legacy 数据自动降级：先尝试严格过滤，不足则放宽阈值。
+    mdef_override: 可选，传入 build_molecule_config() 调整后的模板。"""
+    mdef = mdef_override or MOLECULE_TYPES[mol_type]
     min_needed = mdef.get('min_clips', 3)
     legacy = _is_legacy_data(clips)
 
     # 先尝试严格过滤
-    pool = _molecular_filter_pass(clips, mol_type, strict=True)
+    pool = _molecular_filter_pass(clips, mol_type, strict=True, mdef_override=mdef)
 
     # 如果严格过滤结果不足，且数据为 legacy，降级重试
     if len(pool) < min_needed and legacy:
-        pool_relaxed = _molecular_filter_pass(clips, mol_type, strict=False)
+        pool_relaxed = _molecular_filter_pass(clips, mol_type, strict=False, mdef_override=mdef)
         if len(pool_relaxed) > len(pool):
             print(f"    [降级] legacy数据严格过滤仅{len(pool)}条，放宽后{len(pool_relaxed)}条")
             pool = pool_relaxed
 
     # 最终兜底：如果仍然不足，取 top-N by score（不做硬过滤）
-    if len(pool) < min_needed and legacy:
-        usable = [c for c in clips if c.get('usable', True) and c.get('reject_reason', '无') == '无']
-        if len(usable) > len(pool):
-            scored = sorted(usable, key=lambda c: -molecular_score(c, mol_type))
-            pool = scored[:max(min_needed * 3, 20)]
-            print(f"    [兜底] 按评分取 top-{len(pool)} 候选")
+    if len(pool) < min_needed:
+        # cinematic_beauty: 不再放宽 vq 到 3.0，而是用 event_subtype + desc 质量信号
+        if mol_type == 'cinematic_beauty':
+            quality_relaxed = [c for c in clips
+                       if c.get('visual_quality', 3) >= 3
+                       and c.get('usable', True)
+                       and c.get('reject_reason', '无') == '无'
+                       and (c.get('event_subtype', '无') or '无') != '无'
+                       and len(c.get('desc_clean', '') or c.get('desc', '') or '') >= 30]
+            if len(quality_relaxed) > len(pool):
+                pool = quality_relaxed
+                print(f"    [兜底] cinematic_beauty 用 event_subtype+desc 质量替代 → {len(pool)} 候选")
+        elif legacy:
+            usable = [c for c in clips if c.get('usable', True) and c.get('reject_reason', '无') == '无']
+            if len(usable) > len(pool):
+                scored = sorted(usable, key=lambda c: -molecular_score(c, mol_type))
+                pool = scored[:max(min_needed * 3, 20)]
+                print(f"    [兜底] 按评分取 top-{len(pool)} 候选")
 
     return pool
 

@@ -120,6 +120,10 @@ def molecular_fusion_score(clip, mol_type):
     # Layer 0: golden_quotes boost for quote_rhythm
     if mol_type == 'quote_rhythm' and golden_quote_boost(clip):
         result += 0.15
+    # P2: 身份反转类加权 - 人物关系信息加成
+    if mol_type == 'identity_twist':
+        char_boost = character_weight_boost(clip)
+        result += 0.05 * char_boost
     return result + 0.08 * nb
 
 
@@ -155,11 +159,21 @@ def load_story_profile():
 
 def load_golden_quotes():
     """读取 story_profile.json 中的 golden_quotes 字段，返回金句列表。
-    每条: {episode, timestamp, text, type, impact}"""
+    每条: {episode, timestamp, text, type, impact}
+    P2: 也支持独立的 golden_quotes.json 文件。"""
     data = _load_full_profile()
     quotes = data.get("golden_quotes", [])
-    if not isinstance(quotes, list):
-        return []
+    if not isinstance(quotes, list) or len(quotes) == 0:
+        # Fallback: 独立的 golden_quotes.json
+        gq_path = os.path.join(os.path.dirname(OUTPUT_DIR), "golden_quotes.json")
+        if os.path.exists(gq_path):
+            try:
+                with open(gq_path, 'r', encoding='utf-8') as f:
+                    quotes = json.load(f)
+                if not isinstance(quotes, list):
+                    quotes = []
+            except Exception:
+                quotes = []
     return quotes
 
 
@@ -200,6 +214,44 @@ def load_character_relationships():
     return chars
 
 
+def character_weight_boost(clip):
+    """P2: 基于人物关系的加权。如果片段描述中出现关键角色名 + 角色关键事件关键词，
+    返回 0-4 的加权值，用于身份反转类选片。"""
+    chars = load_character_relationships()
+    if not chars:
+        return 0
+    desc = (clip.get('desc_clean', '') or clip.get('desc', '') or '').lower()
+    event_text = clip_event_text(clip).lower()
+    combined = desc + ' ' + event_text
+    boost = 0
+    # 核心角色关键词映射
+    char_keywords = {
+        '李侠': ['识破', '战术', '断后', '伪装', '反杀'],
+        '聂仲尤': ['统帅', '斩杀', '突围', '托付'],
+        '张五郎': ['追杀', '围捕', '阴谋', '设伏'],
+        '天魁': ['叛变', '出卖', '出卖情报', '背叛'],
+        '张文婧': ['对峙', '劫持', '离间'],
+        '韩承煦': ['解读', '遗言', '宿命'],
+        '巧儿': ['见证', '复述', '记号'],
+        '高长寿': ['情报', '战略', '北上'],
+    }
+    for char in chars:
+        name = char.get('姓名', '')
+        if not name or len(name) < 2:
+            continue
+        name_lower = name.lower()
+        if name_lower not in combined:
+            continue
+        boost += 0.5  # 角色出场基础分
+        # 匹配关键事件
+        keywords = char_keywords.get(name, [])
+        event_lower = event_text.lower()
+        if any(k in event_lower for k in keywords):
+            # 角色 + 关键事件同时出现，额外加分
+            boost += 1.0
+    return min(4, boost)
+
+
 def _parse_ep_range(ep_range_str):
     """解析 "EP01-EP10" / "1-10" 等格式 → (min_ep, max_ep)。"""
     import re
@@ -210,8 +262,10 @@ def _parse_ep_range(ep_range_str):
 
 
 def narrative_boost(clip):
-    """基于 story_profile 的叙事加权：高潮段 +1，高潮段内冲突事件再 +1。"""
+    """基于 story_profile 的叙事加权：高潮段 +1，高潮段内冲突事件再 +1。
+    P2: 额外加权角色出场（在关键事件中出现的角色 +0.5）"""
     nodes = load_story_profile()
+    chars = load_character_relationships()
     if not nodes:
         return 0
     try:
@@ -219,6 +273,7 @@ def narrative_boost(clip):
     except (ValueError, TypeError):
         return 0
     event_text = clip_event_text(clip)
+    desc = clip.get('desc_clean', '') or clip.get('desc', '') or ''
     boost = 0
     for node in nodes:
         ep_lo, ep_hi = _parse_ep_range(node.get("集数范围", ""))
@@ -230,4 +285,10 @@ def narrative_boost(clip):
         if any(kw in event_text for kw in ["对峙", "冲突", "打斗"]) and \
            any(kw in stage for kw in ["高潮", "决战", "反转"]):
             boost += 1
+        # P2: 角色出场加权 - 检查是否出现关键角色名
+        if chars and any(kw in stage for kw in ["高潮", "反转", "背叛"]):
+            for char in chars:
+                name = char.get("姓名", "")
+                if name and len(name) >= 2 and name in desc:
+                    boost += 0.5
     return boost
