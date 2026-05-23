@@ -25,9 +25,15 @@ def narrative_stage_order(selected_clips, mol_type="hook_clash"):
         st = _get_stage_index(c)
         stage_map.setdefault(st, []).append((i, c))
 
-    # 阶段内按 hook 降序
+    # 阶段内排序：Stage 1 按剧集时序（因果链），其他阶段按 hook 降序
     for st in stage_map:
-        stage_map[st].sort(key=lambda x: -x[1].get('hook_value', 1))
+        if st == 1:
+            stage_map[st].sort(key=lambda x: (
+                int(x[1].get('ep', 0) or 0),
+                x[1].get('time', 0) or x[1].get('ts', 0) or 0
+            ))
+        else:
+            stage_map[st].sort(key=lambda x: -x[1].get('hook_value', 1))
 
     # 按叙事流顺序输出
     result = []
@@ -88,15 +94,19 @@ def narrative_order(selected_clips):
 def _get_stage_index(clip):
     """从 clip 中提取故事阶段序号（1-5），无数据返回 0。"""
     st = (clip.get('story_stage', '') or clip.get('_v2', {}).get('story_stage', ''))
-    if not st:
-        ep = int(clip.get('ep', 0) or 0)
-        if ep <= 10: return 1
-        if ep <= 25: return 2
-        if ep <= 45: return 3
-        if ep <= 62: return 4
-        if ep <= 76: return 5
-        return 0
-    stage_map = {"序幕": 1, "局势": 2, "权谋": 3, "生死": 4, "终局": 5}
-    for k, v in stage_map.items():
-        if k in st: return v
+    if st:
+        stage_map = {"序幕": 1, "局势": 2, "权谋": 3, "生死": 4, "终局": 5}
+        for k, v in stage_map.items():
+            if k in st: return v
+        # 编码损坏兜底：检查非空即当 Stage 1
+        if len(st) >= 2:
+            ep = int(clip.get('ep', 0) or 0)
+            if ep <= 10: return 1
+    # 兜底：按集数范围
+    ep = int(clip.get('ep', 0) or 0)
+    if ep <= 10: return 1
+    if ep <= 25: return 2
+    if ep <= 45: return 3
+    if ep <= 62: return 4
+    if ep <= 76: return 5
     return 0
