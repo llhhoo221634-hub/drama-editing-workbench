@@ -348,6 +348,7 @@ def parse_vision_line(line):
             result["suggested_duration"] = float(v2.get("suggested_duration", 2.5) or 2.5)
             result["action_direction"] = v2.get("action_direction", "静止")
             result["emotion_trend"] = v2.get("emotion_trend", "稳定")
+            result["story_stage"] = v2.get("story_stage", "")
             result["_v2"] = v2  # 保留完整V2/V3数据
             result["scene_types"] = list(set(result["scene_types"]))
             return result

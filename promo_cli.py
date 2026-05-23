@@ -103,13 +103,26 @@ def molecular_rank(pool, mol_type, top_n=10, mdef_override=None):
                 beat_used[beat] = beat_used.get(beat, 0) + 1
                 need -= 1
 
-    # 填满
+    # 填满（优先叙事阶段多样性）
     if len(selected) < n:
-        for c in ranked:
-            if c not in selected:
-                selected.append(c)
+        stage_used = {}
+        for c in selected:
+            st = c.get('story_stage', '') or c.get('_v2', {}).get('story_stage', '')
+            if st:
+                stage_used[st] = stage_used.get(st, 0) + 1
+        # 排序: 未覆盖阶段优先 → 覆盖少的优先 → 分数高的优先
+        remaining = [c for c in ranked if c not in selected]
+        remaining.sort(key=lambda c: (
+            stage_used.get(c.get('story_stage', '') or c.get('_v2', {}).get('story_stage', ''), 99),
+            -molecular_fusion_score(c, mol_type)
+        ))
+        for c in remaining:
             if len(selected) >= n:
                 break
+            selected.append(c)
+            st = c.get('story_stage', '') or c.get('_v2', {}).get('story_stage', '')
+            if st:
+                stage_used[st] = stage_used.get(st, 0) + 1
 
     if mol_type in ['hook_clash', 'quote_rhythm', 'suspense_hook']:
         hook = next((c for c in ranked if is_high_conflict_clip(c)), None)

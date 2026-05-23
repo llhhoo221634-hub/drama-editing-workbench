@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>短剧宣发 · 视频审片</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Microsoft YaHei',sans-serif;background:#1a1a2e;color:#eee;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+header{background:#16213e;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
+header h1{font-size:20px;color:#e94560}
+.sort-btns{display:flex;gap:8px}
+.sort-btns button{padding:6px 14px;border:1px solid #e94560;background:transparent;color:#e94560;border-radius:4px;cursor:pointer;font-size:13px}
+.sort-btns button.active{background:#e94560;color:#fff}
+.sort-btns button.montage{background:#8e44ad;color:#fff;border-color:#8e44ad}
+.sort-btns button.montage.active{background:#6c3483}
+main{flex:1;display:flex;overflow:hidden}
+.video-area{flex:1;display:flex;align-items:center;justify-content:center;background:#000;position:relative;flex-direction:column}
+.video-area .montage-label{color:#e94560;font-size:14px;padding:8px;display:none}
+.video-area .montage-label.show{display:block}
+.video-area video{max-width:100%;max-height:100%;object-fit:contain}
+.video-area .placeholder{color:#555;font-size:18px}
+.sidebar{width:380px;background:#16213e;display:flex;flex-direction:column;overflow-y:auto;flex-shrink:0}
+.meta{padding:16px;border-bottom:1px solid #0f3460}
+.meta .tags{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.meta .tag{padding:3px 8px;border-radius:3px;font-size:12px;background:#0f3460}
+.meta .tag.hook{background:#e94560}
+.meta .tag.high{background:#d4a017}
+.meta .hint{font-size:13px;color:#aaa;line-height:1.6;margin-top:8px;max-height:120px;overflow-y:auto}
+.meta .subs{font-size:13px;color:#ffd700;margin-top:6px;padding:4px 8px;background:rgba(255,215,0,0.1);border-radius:3px}
+.actions{padding:16px;display:flex;gap:10px;justify-content:center;border-bottom:1px solid #0f3460}
+.actions button{flex:1;padding:12px 8px;border:none;border-radius:6px;font-size:15px;cursor:pointer;font-weight:bold;transition:transform .1s}
+.actions button:hover{transform:scale(1.03)}
+.actions .reject{background:#c0392b;color:#fff}
+.actions .keep{background:#27ae60;color:#fff}
+.actions .star{background:#f39c12;color:#fff}
+.actions .skip{background:#555;color:#ccc}
+.actions button.done{opacity:.4;transform:none}
+.progress{padding:16px;font-size:13px;color:#aaa}
+.progress .bar{height:6px;background:#0f3460;border-radius:3px;margin-top:8px}
+.progress .bar-inner{height:100%;background:#e94560;border-radius:3px;transition:width .3s}
+footer{padding:10px 16px;background:#16213e;display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#666;flex-shrink:0}
+footer button{padding:6px 14px;background:#e94560;color:#fff;border:none;border-radius:4px;cursor:pointer}
+footer .shortcuts{font-size:11px}
+</style>
+</head>
+<body oncontextmenu="return false">
+
+<header>
+  <h1>🎬 短剧宣发 · 视频审片</h1>
+  <div class="sort-btns">
+    <button id="sort-hook" class="active" onclick="sortBy('hook')">🔥 hook排序</button>
+    <button id="sort-ep" onclick="sortBy('ep')">📺 剧集顺序</button>
+    <button id="view-montage" class="montage" onclick="toggleMontage()">🎞️ 混剪预览</button>
+  </div>
+</header>
+
+<main>
+  <div class="video-area" id="video-area">
+    <div class="montage-label" id="montage-label">🎞️ 混剪预览 — Top 15 高光片段拼接</div>
+    <video id="player" controls autoplay loop onended="onVideoEnd()"></video>
+  </div>
+  <div class="sidebar">
+    <div class="meta" id="meta"></div>
+    <div class="actions">
+      <button class="reject" onclick="decide('reject')" id="btn-reject">❌ 丢弃</button>
+      <button class="keep" onclick="decide('keep')" id="btn-keep">✅ 保留</button>
+      <button class="star" onclick="decide('star')" id="btn-star">⭐ 顶级</button>
+    </div>
+    <div class="progress">
+      <span id="prog-text">0/0</span> | 保留:<span id="cnt-keep">0</span> 丢弃:<span id="cnt-reject">0</span> 顶级:<span id="cnt-star">0</span>
+      <div class="bar"><div class="bar-inner" id="prog-bar" style="width:0%"></div></div>
+    </div>
+    <div class="sidebar-list" id="sidebar-list" style="flex:1;overflow-y:auto;padding:8px"></div>
+  </div>
+</main>
+
+<footer>
+  <span>←→ 翻页 | 1=丢弃 2=保留 3=顶级 | Space=暂停</span>
+  <button onclick="exportResults()">📥 导出结果</button>
+</footer>
+
+<script src="review_data.js"></script>
+<script>
+const STORAGE_KEY = 'drama_review_decisions';
+let clips = REVIEW_CLIPS || [];
+let decisions = {};
+let currentIdx = 0;
+let sortMode = 'hook';
+
+// Load saved decisions
+try { decisions = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch(e) { decisions = {}; }
+
+function sortBy(mode) {
+  sortMode = mode;
+  document.getElementById('sort-hook').classList.toggle('active', mode === 'hook');
+  document.getElementById('sort-ep').classList.toggle('active', mode === 'ep');
+  if (mode === 'hook') {
+    clips.sort((a, b) => b.hook - a.hook || b.emo - a.emo);
+  } else {
+    clips.sort((a, b) => a.ep - b.ep || a.ts - b.ts);
+  }
+  currentIdx = 0;
+  render();
+  loadClip();
+}
+
+function loadClip() {
+  const c = clips[currentIdx];
+  if (!c) return;
+  const v = document.getElementById('player');
+  v.src = CLIP_BASE_URL + c.clip_file;
+  v.load();
+  v.play().catch(() => {});
+
+  // metadata
+  const d = decisions[c.frame_id] || '';
+  const cls = d === 'star' ? '⭐' : d === 'keep' ? '✅' : d === 'reject' ? '❌' : '';
+  document.getElementById('meta').innerHTML = `
+    <div class="tags">
+      <span class="tag hook">EP${c.ep} ${c.ts.toFixed(0)}s</span>
+      <span class="tag">${c.event}</span>
+      ${c.subtype ? `<span class="tag">${c.subtype}</span>` : ''}
+      <span class="tag">emo=${c.emo}</span>
+      <span class="tag">hook=${c.hook}</span>
+      <span class="tag">${c.ad||'?'}/${c.et||'?'}</span>
+      <span class="tag">btn-cut_role-${c.cut_role||'?'}</span>
+      ${cls ? `<span class="tag high">${cls}</span>` : ''}
+    </div>
+    ${c.subtitles ? `<div class="subs">📝 ${c.subtitles}</div>` : ''}
+    <div class="hint">${c.hint || '(无描述)'}</div>
+  `;
+
+  // button states
+  ['reject','keep','star'].forEach(k => {
+    document.getElementById('btn-'+k).classList.toggle('done', decisions[c.frame_id] === k);
+  });
+
+  // update sidebar list highlight
+  updateSidebar();
+  updateProgress();
+}
+
+function decide(type) {
+  const c = clips[currentIdx];
+  if (!c) return;
+  decisions[c.frame_id] = decisions[c.frame_id] === type ? '' : type; // toggle off
+  saveDecisions();
+  loadClip();
+  // auto-advance
+  if (decisions[c.frame_id]) setTimeout(() => next(), 300);
+}
+
+function next() { if (currentIdx < clips.length - 1) { currentIdx++; loadClip(); } }
+function prev() { if (currentIdx > 0) { currentIdx--; loadClip(); } }
+function skip() { next(); }
+function onVideoEnd() { /* loop */ }
+
+let montageMode = false;
+function toggleMontage() {
+  montageMode = !montageMode;
+  const v = document.getElementById('player');
+  const label = document.getElementById('montage-label');
+  const btn = document.getElementById('view-montage');
+  if (montageMode) {
+    v.src = CLIP_BASE_URL + '_montage_preview.mp4';
+    btn.classList.add('active');
+    if (label) label.classList.add('show');
+  } else {
+    btn.classList.remove('active');
+    if (label) label.classList.remove('show');
+    loadClip();
+  }
+  v.load();
+  v.play().catch(() => {});
+}
+
+function updateProgress() {
+  const total = clips.length;
+  const done = Object.values(decisions).filter(v => !!v).length;
+  const keep = Object.values(decisions).filter(v => v === 'keep').length;
+  const reject = Object.values(decisions).filter(v => v === 'reject').length;
+  const star = Object.values(decisions).filter(v => v === 'star').length;
+  document.getElementById('prog-text').textContent = `${currentIdx+1}/${total}`;
+  document.getElementById('cnt-keep').textContent = keep;
+  document.getElementById('cnt-reject').textContent = reject;
+  document.getElementById('cnt-star').textContent = star;
+  document.getElementById('prog-bar').style.width = (done/total*100).toFixed(1) + '%';
+}
+
+function updateSidebar() {
+  const list = document.getElementById('sidebar-list');
+  let html = '';
+  clips.forEach((c, i) => {
+    const d = decisions[c.frame_id] || '';
+    const icon = d === 'star' ? '⭐' : d === 'keep' ? '✅' : d === 'reject' ? '❌' : '';
+    const active = i === currentIdx;
+    html += `<div onclick="currentIdx=${i};loadClip()" style="padding:6px 8px;cursor:pointer;font-size:12px;border-radius:3px;margin:2px 0;${active?'background:#0f3460':''}${d==='reject'?'opacity:.4':''}">
+      ${icon} EP${c.ep} ${c.ts.toFixed(0)}s | ${c.event} | hk=${c.hook}
+    </div>`;
+  });
+  list.innerHTML = html;
+}
+
+function saveDecisions() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(decisions));
+}
+
+function exportResults() {
+  const rows = [['frame_id','ep','ts','hook','promo','decision']];
+  clips.forEach(c => {
+    rows.push([c.frame_id, c.ep, c.ts, c.hook, c.promo, decisions[c.frame_id] || 'unrated']);
+  });
+  const csv = rows.map(r => r.join(',')).join('\n');
+  const blob = new Blob(['﻿' + csv], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'review_decisions.csv';
+  a.click();
+}
+
+function render() { updateProgress(); updateSidebar(); }
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft') prev();
+  else if (e.key === 'ArrowRight') next();
+  else if (e.key === '1') decide('reject');
+  else if (e.key === '2') decide('keep');
+  else if (e.key === '3') decide('star');
+  else if (e.key === ' ') { e.preventDefault(); const v = document.getElementById('player'); v.paused ? v.play() : v.pause(); }
+});
+
+// Init
+sortBy('hook');
+</script>
+</body>
+</html>
