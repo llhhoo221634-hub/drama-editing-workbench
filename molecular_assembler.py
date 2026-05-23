@@ -458,7 +458,7 @@ def build_molecule_timeline(mol_type, selected, clip_specs, final_path=None, dur
         "audio_tracks": {
             "dialogue": {"source": "source_clips", "windows": dialogue_windows},
             "bgm": {
-                "path": bgm_path,
+                "path": _resolve_bgm(mol_type),
                 "volume": mdef.get("bgm_vol", 0.25),
                 "style": mdef.get("bgm_style", "default"),
             },

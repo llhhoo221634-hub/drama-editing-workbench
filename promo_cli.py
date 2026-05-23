@@ -31,7 +31,7 @@ from selection_scorer import (molecular_fusion_score,
                               _parse_ep_range, _load_full_profile, load_analysis)
 from selection_constraints import (_molecular_filter_pass, molecular_filter, _is_legacy_data,
                                    deduplicate_clips, apply_hard_constraints)
-from narrative_sequencer import narrative_order
+from narrative_sequencer import narrative_order, narrative_stage_order
 from molecular_assembler import (cut_molecular_clips, assemble_molecular, build_molecule_timeline,
                                   write_timeline_file, molecular_qa_checks, write_qa_report)
 
@@ -190,7 +190,8 @@ def process_molecule(clips, mol_type, dry_run=False, export_csv=False, review_se
         ranked = molecular_rank(pool, mol_type, top_n=mdef['max_clips'], mdef_override=mdef)
         selected = apply_hard_constraints(ranked, target_count=mdef['min_clips'],
                                           max_per_ep=4, max_same_shot=2)
-        selected = narrative_order(selected)
+        # 叙事阶段排序：阶段间按叙事流，阶段内按hook降序
+        selected = narrative_stage_order(selected, mol_type)
         # 动态低水位：候选不够时放宽硬约束重新选片
         effective_min = mdef['min_clips']
         if len(selected) < effective_min:
